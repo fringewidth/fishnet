@@ -82,11 +82,41 @@ class Fishnet:
                 self.emb_cache[i] = r
         return torch.stack([self.emb_cache[i] for i in ids])
 
+    def _body(self) -> None:
+        x = self.ex.step(self.xbuf)
+        self.kbuf.copy_(x[0, self.keep_ir])
+
+    @torch.no_grad()
+    def _capture(self) -> None:
+        """One CUDA graph of the circuit's step (as rv/chat.py's ExecRow). Warm-up runs change
+        the state, so it is saved and put back around them."""
+        self.xbuf = torch.zeros(1, self.ex.D, device=self.dev)
+        self.kbuf = torch.zeros(len(self.c.keep), device=self.dev)
+        heads = [st for st in self.ex.steps if not isinstance(st, tuple)]
+        saved = [st["S"].clone() for st in heads] + [h.clone() for h in self.ex.hist if h is not None]
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s):
+            for _ in range(3):
+                self._body()
+        torch.cuda.current_stream().wait_stream(s)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph):
+            self._body()
+        bufs = [st["S"] for st in heads] + [h for h in self.ex.hist if h is not None]
+        for b, v in zip(bufs, saved):
+            b.copy_(v)
+
     @torch.no_grad()
     def _exec(self, i: int) -> torch.Tensor:
         """One token through the circuit; returns the kept values (code, tau, mu)."""
-        x = self.ex.step(self._emb([i]))
-        return x[0, self.keep_ir]
+        if self.dev != "cuda":
+            return self.ex.step(self._emb([i]))[0, self.keep_ir]
+        if getattr(self, "graph", None) is None:
+            self._capture()
+        self.xbuf.copy_(self._emb([i]))
+        self.graph.replay()
+        return self.kbuf.clone()
 
     def _hc(self, i: int, keep: torch.Tensor) -> torch.Tensor:
         """A text token's residual after the chip layers (the exit leaves Qwen's part and the
@@ -140,9 +170,12 @@ class Fishnet:
         pos = len(ids)
         nxt = int(torch.argmax(out.logits[0, -1, : self.v0]))
         gen, n_text, n_chip, n_verified, head_bad = [], 0, 0, 0, 0
+        times = []  # (generated index, seconds): every text token, every 1000th chess token
         t0 = time.time()
         while n_text < max_text and n_chip < max_chip:
             gen.append(nxt)
+            if nxt < self.v0 or n_chip % 1000 == 0:
+                times.append((len(gen) - 1, round(time.time() - t0, 3)))
             if nxt in self.eos:
                 break
             keep = self._exec(nxt)
@@ -179,7 +212,8 @@ class Fishnet:
                 "start": next((t for t in chess if t[0] == "START"), None),
                 "puts": [t for t in chess if t[0] == "PUT"],
                 "verified_positions": n_verified, "head_mismatches": head_bad if check_head else None,
-                "tokens": gen}
+                "prompt": self.tok.decode(ids, skip_special_tokens=False), "times": times,
+                "chip_token_offset": self.v0, "tokens": gen}
 
     def _hf_chip_view(self, ids: list[int]):
         """The chip layers as HF modules on their own cache: a step function returning the
@@ -210,7 +244,6 @@ def serve(f: Fishnet, port: int) -> None:
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             try:
                 res = f.move(req["fen"], verify=req.get("verify", 0), check_head=req.get("check_head", False))
-                res.pop("tokens")
                 body = json.dumps(res).encode()
                 self.send_response(200)
             except Exception as e:  # noqa: BLE001

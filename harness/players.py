@@ -78,8 +78,8 @@ class Fishnet:
     weights' run against the token-level spec: the move must equal SearchMachine's at the
     checkpoint's depth, and the board Qwen loaded (its PUT tokens) must equal the real one."""
 
-    def __init__(self, url: str = "http://127.0.0.1:8765", verify: int = 0):
-        self.url, self.verify = url, verify
+    def __init__(self, url: str = "http://127.0.0.1:8765", verify: int = 0, log_dir: str | None = None):
+        self.url, self.verify, self.log_dir = url, verify, log_dir
         self.name = "fishnet (Qwen3.5-4B, in weights)"
         self.last = ""
         self.log = []
@@ -92,7 +92,15 @@ class Fishnet:
         res = json.loads(urllib.request.urlopen(req, timeout=3600).read())
         if "error" in res:
             raise RuntimeError(res["error"])
-        self.log.append(res)
+        if self.log_dir:  # the whole token stream of the move (for the replay video)
+            import gzip
+            import os
+            n = len(board.move_stack)
+            with gzip.open(os.path.join(self.log_dir, f"ply{n:03d}-fishnet.json.gz"), "wt") as fh:
+                json.dump(res, fh)
+        tokens = res.pop("tokens")
+        res["n_tokens"] = len(tokens)
+        self.detail = res
         want = {s: (p.piece_type + (0 if p.color else 6)) for s, p in board.piece_map().items()}
         got = {s: code for _, s, code in res["puts"] if code}
         assert got == want, ("the board Qwen loaded differs from the game's", board.fen())

@@ -42,17 +42,50 @@ class ClaudePlayer:
                "--strict-mcp-config", "--mcp-config", self.cfg,
                "--allowedTools", "mcp__chess__get_board,mcp__chess__legal_moves,mcp__chess__submit_move",
                "--no-session-persistence", "--output-format", "json"]
+        cmd[cmd.index("json")] = "stream-json"
+        cmd.append("--verbose")
         for attempt in range(3):
             t0 = time.time()
-            r = subprocess.run(cmd, cwd=self.work, capture_output=True, text=True, timeout=3600)
+            events, raw = [], []
+            proc = subprocess.Popen(cmd, cwd=self.work, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            for line in proc.stdout:  # every event, stamped on arrival (for the replay video)
+                t = round(time.time() - t0, 2)
+                raw.append({"t": t, "line": line.rstrip("\n")})
+                try:
+                    ev = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if ev.get("type") in ("assistant", "user"):
+                    for blk in ev.get("message", {}).get("content", []) or []:
+                        if not isinstance(blk, dict):
+                            continue
+                        k = blk.get("type")
+                        if k == "text":
+                            events.append({"t": t, "kind": "text", "text": blk["text"]})
+                        elif k == "thinking":
+                            events.append({"t": t, "kind": "thinking", "text": blk.get("thinking", "")})
+                        elif k == "tool_use":
+                            events.append({"t": t, "kind": "tool_use", "name": blk["name"], "input": blk.get("input")})
+                        elif k == "tool_result":
+                            c = blk.get("content")
+                            if isinstance(c, list):
+                                c = "".join(x.get("text", "") for x in c if isinstance(x, dict))
+                            events.append({"t": t, "kind": "tool_result", "text": c})
+            err = proc.stderr.read()
+            proc.wait(timeout=3600)
             dt = time.time() - t0
             if self.log_dir:
                 n = len(board.move_stack)
-                open(os.path.join(self.log_dir, f"ply{n:03d}-try{attempt}.json"), "w").write(r.stdout + r.stderr)
+                with open(os.path.join(self.log_dir, f"ply{n:03d}-try{attempt}.jsonl"), "w") as fh:
+                    for r_ in raw:
+                        fh.write(json.dumps(r_) + "\n")
+                if err:
+                    open(os.path.join(self.log_dir, f"ply{n:03d}-try{attempt}.err"), "w").write(err)
             if os.path.exists(out):
                 self.last = f"{dt:.0f}s"
+                self.detail = {"seconds": round(dt, 1), "events": events, "attempt": attempt}
                 return chess.Move.from_uci(open(out).read().strip())
-        raise RuntimeError(f"no move submitted after 3 attempts: {r.stdout[-500:]} {r.stderr[-500:]}")
+        raise RuntimeError(f"no move submitted after 3 attempts: {raw[-3:]} {err[-500:]}")
 
     def close(self):
         pass

@@ -483,3 +483,222 @@ def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
     beta = OFF - beta_x  # -(max - OFF)
     out.update(best=best, stand=stand, alpha=alpha, beta=beta)
     return out
+
+
+# ====================================================================== stage 4: move selection
+
+def kind_pairs():
+    """(kind 1..6 [no pawns: 2..6], a, t, squares between) for every geometric non-pawn move."""
+    out = []
+    for a in range(64):
+        r, f = divmod(a, 8)
+        for k, dirs, reach in ((2, KNIGHT_D, 1), (6, KING_D, 1), (3, DIAG_D, 7), (4, ORTH_D, 7),
+                               (5, DIAG_D + ORTH_D, 7)):
+            for dr, df in dirs:
+                between = []
+                for d in range(1, reach + 1):
+                    t = sq_at(r + dr * d, f + df * d)
+                    if t is None:
+                        break
+                    out.append((k, a, t, list(between)))
+                    between.append(t)
+    return out
+
+
+KPAIRS = kind_pairs()
+
+
+def priority(c: ChessCirc, ind: list, name: str) -> list:
+    """first[j] = ind[j] AND no ind[i] for i < j (ind: 0/1 forms)."""
+    one = c.one
+    out = []
+    for j, e in enumerate(ind):
+        if e is None:
+            out.append(Expr())
+            continue
+        lits = [e] + [one - ind[i] for i in range(j) if ind[i] is not None]
+        out.append(c.node(c.t_and(lits), f"{name}[{j}]"))
+    return out
+
+
+def build_stage4(c: ChessCirc, s1: dict, s2: dict, s3: dict) -> dict:
+    one, is_ = c.one, c.is_
+    p_oh = s1["p_oh"]
+    rel, empty = s2["rel"], s2["empty"]
+    stm_white = s2["stm_white"]
+    stm_black = one - stm_white
+    fresh = is_["START"] + c.isMOVE
+    out = {}
+
+    def us(s, k):  # our piece of kind k (1..6) on s
+        return rel[s][k - 1]
+
+    def them(s, k):
+        return rel[s][k + 5]
+
+    # ---------------------------------------------------------------- the cursor (last move tried)
+    def mv_bits(i, lo, n):
+        def fn(t):
+            d = V.decode(t)
+            return (d[i] >> lo & 1) if d[0] in ("MOVE", "MOVE_IMP") else 0
+        return fn
+
+    fields = [("f", 1, 6), ("t", 2, 6), ("pk", 3, 3), ("xk", 4, 3)]
+    data, col = {}, 2
+    names = []
+    for nm, i, n in fields:
+        for b in range(n):
+            data[col] = c.feat(f"cur.{nm}.b{b}", mv_bits(i, b, n))
+            names.append((nm, b))
+            col += 1
+    k_cur = {r: c.node(c.t_and([c.isMOVE, p_oh[r + 1]]), f"kcur[{r}]") for r in range(MAX_PLY - 1)}
+    (cur,) = thead(c, "cursor", k_cur, {r: p_oh[r] for r in range(MAX_PLY - 1)},
+                   [{"data": data, "ref": one}])
+    c.tables["cursor"] = c.nodes[-1]
+    cb = {nm: [None] * n for nm, _, n in fields}
+    for (nm, b), d in zip(names, cur):
+        cb[nm][b] = d
+    has_cur = one - fresh  # a fresh node has no cursor (its row is stale)
+
+    def rel_onehot(bits, tag):
+        out_ = []
+        for s in range(64):
+            lw = [b if s >> i & 1 else one - b for i, b in enumerate(bits)]
+            lb = [b if (s ^ 56) >> i & 1 else one - b for i, b in enumerate(bits)]
+            out_.append(c.node(c.t_and(lw + [stm_white, has_cur]) + c.t_and(lb + [stm_black, has_cur]),
+                               f"{tag}[{s}]"))
+        return out_
+
+    cf = rel_onehot(cb["f"], "cur.f")  # relative one-hots (all 0 without a cursor)
+    ct = rel_onehot(cb["t"], "cur.t")
+    pk_oh = [c.node(c.t_and([b if k >> i & 1 else one - b for i, b in enumerate(cb["pk"])] + [has_cur]),
+                    f"cur.pk=={k}") for k in range(1, 7)]
+    xk_oh = [c.node(c.t_and([b if k >> i & 1 else one - b for i, b in enumerate(cb["xk"])] + [has_cur]),
+                    f"cur.xk=={k}") for k in range(0, 7)]
+    f0 = sum((cf[s] * s for s in range(64)), Expr())
+    t0 = sum((ct[s] * s for s in range(64)), Expr())
+    cur_promo = c.node([t for s in range(56, 64) for t in c.t_and([ct[s], pk_oh[0], xk_oh[0]])], "cur.promo")
+    cur_tac = has_cur - xk_oh[0] + cur_promo  # a capture, en passant or a queen promotion
+    cur_quiet = has_cur - cur_tac
+    # victim value of a tactical cursor: xk 1..5, en passant 1, promotion push 6
+    cv_val = sum((xk_oh[k] * k for k in range(1, 6)), Expr()) + xk_oh[6] + cur_promo * 6
+    cvk = (cur_tac * 6 - cv_val) * 64 + t0  # meaningful only when cur_tac
+    cak = sum((pk_oh[k - 1] * (k - 1) for k in range(1, 7)), Expr()) * 64 + f0
+    # integer thresholds for "after the cursor": no cursor -> -1 (everything), quiet -> past the end
+    cvk_after = cvk + (one - cur_tac) * (-1) + cur_quiet * 1000  # cvk if tactical, -1 none, 999 quiet
+    out.update(cur_tac=cur_tac, cur_quiet=cur_quiet, cf=cf, ct=ct)
+
+    # ---------------------------------------------------------------- victims
+    ep = s2["ep_read"]
+    vs = [None] * 384
+    for v in range(64):
+        for w in range(1, 6):
+            terms = c.ge_terms(s2["atk_us"][v], 1, lits=[them(v, w)])
+            if w == 1 and 40 <= v < 48:
+                fl = v - 40
+                pawns = Expr()
+                for a in (32 + fl - 1, 32 + fl + 1):
+                    if 32 <= a < 40 and abs(a % 8 - fl) == 1:
+                        pawns = pawns + us(a, 1)
+                terms += c.ge_terms(pawns, 1, lits=[ep[fl]])
+            vs[(6 - w) * 64 + v] = c.node(terms, f"vs[{w},{v}]")
+        if v >= 56:
+            vs[v] = c.node(c.t_and([empty[v], us(v - 8, 1)]), f"vs[6,{v}]")
+    vs_after = [None if e is None else c.node(c.ge_terms(j - 1 - cvk_after, 0, lits=[e]), f"vsa[{j}]")
+                for j, e in enumerate(vs)]
+    vfirst = priority(c, vs_after, "vfirst")
+    vsq_cap = [sum((vfirst[(6 - w) * 64 + v] for w in range(1, 6)), Expr()) for v in range(64)]
+    vsq_pro = [vfirst[v] if v >= 56 else Expr() for v in range(64)]
+    vsq = [vsq_cap[v] + vsq_pro[v] for v in range(64)]
+
+    def attackers(cap_sel, pro_sel, tag):
+        """AT[(k-1)*64 + a]: our piece of kind k on a can make the tactical move onto the selected
+        victim (cap_sel: a capture / en passant square; pro_sel: a promotion push square)."""
+        terms = [[] for _ in range(384)]
+        for k, a, t, between in KPAIRS:
+            terms[(k - 1) * 64 + a] += c.t_and([us(a, k), cap_sel[t]] + [empty[b] for b in between])
+        for a in range(8, 56):
+            r, f = divmod(a, 8)
+            for df in (-1, 1):
+                t = sq_at(r + 1, f + df)
+                if t is not None:
+                    terms[a] += c.t_and([us(a, 1), cap_sel[t]])
+            if a + 8 >= 56:
+                terms[a] += c.t_and([us(a, 1), pro_sel[a + 8]])
+        return [c.node(t, f"{tag}[{j}]") if t else None for j, t in enumerate(terms)]
+
+    at1 = attackers(vsq_cap, vsq_pro, "at1")
+    afirst1 = priority(c, at1, "afirst1")
+    # (a) the cursor's own victim: its next attacker after the cursor's attacker
+    ct_cap = [c.node(c.t_and([ct[v], cur_tac, one - cur_promo]), f"ct.cap[{v}]") for v in range(64)]
+    ct_pro = [c.node(c.t_and([ct[v], cur_promo]), f"ct.pro[{v}]") if v >= 56 else Expr() for v in range(64)]
+    at0 = attackers(ct_cap, ct_pro, "at0")
+    at0_after = [None if e is None else c.node(c.ge_terms(j - 1 - cak, 0, lits=[e]), f"at0a[{j}]")
+                 for j, e in enumerate(at0)]
+    afirst0 = priority(c, at0_after, "afirst0")
+
+    # ---------------------------------------------------------------- quiet moves
+    def quiet_terms(gate_from, tag_unused=None):
+        """per (from, to): unit terms for a quiet move from a square gated by gate_from[a]."""
+        terms = {}
+        for k, a, t, between in KPAIRS:
+            terms.setdefault((a, t), []).extend(
+                c.t_and([us(a, k), empty[t], gate_from[a]] + [empty[b] for b in between]))
+        for a in range(8, 48):  # pushes that are not promotions
+            terms.setdefault((a, a + 8), []).extend(c.t_and([us(a, 1), empty[a + 8], gate_from[a]]))
+        for a in range(8, 16):
+            terms.setdefault((a, a + 16), []).extend(
+                c.t_and([us(a, 1), empty[a + 8], empty[a + 16], gate_from[a]]))
+        rr = s2["rel_right"]
+        atk_t = s2["atk_them"]
+        # castling: the rights, the rook, empty squares, king and transit squares not attacked
+        ks = c.ge_terms(-(atk_t[4] + atk_t[5] + atk_t[6]), 0,
+                        lits=[rr[0], us(4, 6), us(7, 4), empty[5], empty[6], gate_from[4]])
+        qs = c.ge_terms(-(atk_t[4] + atk_t[3] + atk_t[2]), 0,
+                        lits=[rr[1], us(4, 6), us(0, 4), empty[1], empty[2], empty[3], gate_from[4]])
+        terms.setdefault((4, 6), []).extend(ks)
+        terms.setdefault((4, 2), []).extend(qs)
+        return terms
+
+    ones = [one] * 64
+    allq = quiet_terms(ones)
+    hasq = [c.node([u for (a, tt), us_ in allq.items() if a == f for u in us_], f"hasq[{f}]") for f in range(64)]
+    # (d) the next from-square with a quiet move: after f0 for a quiet cursor, else from the start
+    f_after = c.node([(1, cur_quiet, f0 + 1)], "f.after") - one  # f0 if quiet, else -1
+    gtf = [c.node(c.ge_terms(f - 1 - f_after, 0), f"gtf[{f}]") for f in range(64)]
+    hq_after = [c.node(c.ge_terms(hasq[f], 1, lits=[gtf[f]]), f"hqa[{f}]") for f in range(64)]
+    ffirst = priority(c, hq_after, "ffirst")
+
+    def targets(sel_from, tag):
+        """QT[t]: a quiet move from the selected square to t (0/1)."""
+        tq = quiet_terms(sel_from)
+        return [c.node([u for (a, tt), us_ in tq.items() if tt == t for u in us_], f"{tag}[{t}]")
+                for t in range(64)]
+
+    qt1 = targets(ffirst, "qt1")
+    tfirst1 = priority(c, qt1, "tfirst1")
+    # (c) the cursor's own from-square: the next target after t0
+    cfq = [c.node(c.t_and([cf[a], cur_quiet]), f"cf.q[{a}]") for a in range(64)]
+    qt0 = targets(cfq, "qt0")
+    gtt = [c.node(c.ge_terms(t - 1 - t0, 0), f"gtt[{t}]") for t in range(64)]
+    qt0_after = [c.node(c.t_and([qt0[t], gtt[t]]), f"qt0a[{t}]") for t in range(64)]
+    tfirst0 = priority(c, qt0_after, "tfirst0")
+
+    # ---------------------------------------------------------------- the choice: a, b, c, d in order
+    full = c.node(c.ge_terms(s3["depth"], 1), "full")  # quiet moves only at full-width nodes
+    ex_a = sum((e for e in afirst0), Expr())
+    ex_b = sum((e for e in afirst1), Expr())
+    ex_c = sum((e for e in tfirst0), Expr())
+    ex_d = sum((e for e in tfirst1), Expr())
+    from_a = [sum((afirst0[(k - 1) * 64 + a] for k in range(1, 7)), Expr()) for a in range(64)]
+    from_b = [sum((afirst1[(k - 1) * 64 + a] for k in range(1, 7)), Expr()) for a in range(64)]
+    gate = [[], [one - ex_a], [one - ex_a, one - ex_b, full], [one - ex_a, one - ex_b, one - ex_c, full]]
+    srcs_from = [from_a, from_b, cf, ffirst]
+    srcs_to = [ct, vsq, tfirst0, tfirst1]
+    exists = [ex_a, ex_b, ex_c, ex_d]
+    sel_from = [c.node([u for i in range(4) for u in c.t_and([srcs_from[i][sq], exists[i]] + gate[i])],
+                       f"sel.f[{sq}]") for sq in range(64)]
+    sel_to = [c.node([u for i in range(4) for u in c.t_and([srcs_to[i][sq], exists[i]] + gate[i])],
+                     f"sel.t[{sq}]") for sq in range(64)]
+    out.update(sel_from=sel_from, sel_to=sel_to, full=full)
+    return out

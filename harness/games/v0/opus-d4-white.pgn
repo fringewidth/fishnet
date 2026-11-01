@@ -1,0 +1,9 @@
+[Event "Qwenputer vs claude-opus-5-5(high) (native calibration)"]
+[Site "?"]
+[Date "2026-11-01"]
+[Round "?"]
+[White "qwenputer-machine@d4"]
+[Black "claude-opus-5-5(high)"]
+[Result "0-1"]
+
+1. Nf3 { score 0 nodes 6016 tokens 12034 } 1... d5 { 10s } 2. Nc3 { score 0 nodes 8397 tokens 16796 } 2... Nf6 { 10s } 3. d4 { score 0 nodes 23593 tokens 47188 } 3... Bf5 { 10s } 4. Be3 { score 2 nodes 29683 tokens 59368 } 4... e6 { 11s } 5. Nh4 { score -7 nodes 39082 tokens 78166 } 5... Bg6 { 43s } 6. Nxg6 { score -22 nodes 25833 tokens 51668 } 6... hxg6 { 7s } 7. Qd3 { score -37 nodes 27893 tokens 55788 } 7... Bb4 { 9s } 8. Qb5+ { score 20 nodes 30310 tokens 60622 } 8... Nc6 { 18s } 9. Qxb7 { score 30 nodes 7815 tokens 15632 } 9... Bxc3+ { 31s } 10. bxc3 { score 29 nodes 5362 tokens 10726 } 10... Na5 { 17s } 11. Qb4 { score 41 nodes 14655 tokens 29312 } 11... Nc4 { 18s } 12. Qa4+ { score 38 nodes 29017 tokens 58036 } 12... Qd7 { 18s } 13. Qxd7+ { score 74 nodes 2492 tokens 4986 } 13... Kxd7 { 8s } 14. O-O-O { score 34 nodes 18596 tokens 37194 } 14... Ne4 { 31s } 15. Rd3 { score 15 nodes 9833 tokens 19668 } 15... Rab8 { 30s } 16. Rd1 { score -46 nodes 49098 tokens 98198 } 16... Nxc3 { 21s } 17. Re1 { score -30998 nodes 11576 tokens 23154 } 17... Rb1# { 11s } 0-1

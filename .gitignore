@@ -1,0 +1,10 @@
+# build outputs
+out/
+chess_native
+__pycache__/
+*.pyc
+# third-party sources fetched for cross-checking (PeSTO tables from other repos)
+ext/
+# per-move LLM transcripts and run logs
+harness/logs/
+harness/runs/

@@ -22,3 +22,39 @@ def _fp32(x):
 
 
 ir.bf16 = _fp32  # is_bf16 / dead / eval_* all route through this name
+
+
+# The emitter (q35/emit.py) checks every weight is a bf16 value and splits constants into bf16
+# parts; with fp32 chip layers both become fp32's. (Only when torch is there: the IR tests run
+# without it.)
+try:
+    import torch as _torch
+    from chipformer.q35 import emit as _emit
+except ImportError:
+    _emit = None
+
+
+def _check_fp32(name, t):
+    b = t.to(_torch.float32).to(t.dtype)
+    bad = ((b != t) | ~_torch.isfinite(b)).nonzero()
+    if len(bad):
+        i = tuple(bad[0].tolist())
+        raise ValueError(f"{name}: weight {t[i].item()!r} at {i} is not an fp32 value")
+
+
+def _fp32_parts(x, n):
+    parts = []
+    for _ in range(n):
+        if x == 0:
+            break
+        p = float(np.float32(x))
+        parts.append(p)
+        x -= p
+    if x != 0:
+        raise ValueError(f"constant needs more than {n} fp32 parts")
+    return parts
+
+
+if _emit is not None:
+    _emit.check_bf16 = _check_fp32
+    _emit.bf16_parts = _fp32_parts

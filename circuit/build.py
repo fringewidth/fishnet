@@ -180,6 +180,23 @@ class ChessCirc(Circ):
         zz = z + BIG * (sum(lits, Expr()) - len(lits)) if lits else z
         return [(coef, self.one, zz - theta + 1), (-coef, self.one, zz - theta)]
 
+    def digit(self, z, d, hi, name, nbits=0, fn=None, value=True):
+        """q = floor(z / d) for an integer z in [0, hi] (sum of thresholds), and the bits of
+        fn(q) from the same thresholds (no extra stage). Returns (q or None, bits)."""
+        fn = fn or (lambda q: q)
+        n = hi // d
+        thr = [self.ge_terms(z, d * j) for j in range(1, n + 1)]
+        q = self.node([t for ts in thr for t in ts], name) if value else None
+        bits = []
+        for i in range(nbits):
+            terms = self.t_const(1) if fn(0) >> i & 1 else []
+            for j in range(1, n + 1):
+                dlt = (fn(j) >> i & 1) - (fn(j - 1) >> i & 1)
+                if dlt:
+                    terms += [(dlt * cf, a, b) for cf, a, b in thr[j - 1]]
+            bits.append(self.node(terms, f"{name}.b{i}"))
+        return q, bits
+
     def eq_terms(self, z, v, lits=(), coef=1):
         return self.ge_terms(z, v, lits, coef) + self.ge_terms(z, v + 1, lits, -coef)
 
@@ -428,23 +445,13 @@ DIV_M = 16384  # floor division offset: e24 + 24 * DIV_M >= 0
 
 
 def int_bits16(c: ChessCirc, x, name: str) -> list:
-    """The 16 bits of an integer x in [0, 65536), in two threshold stages (hi byte, then bits)."""
-    one = c.one
-    hi = c.node([t for j in range(1, 256) for t in c.ge_terms(x, 256 * j)], f"{name}.hi")
-    lo = x - 256 * hi
-
-    def byte_bits(z, tag):
-        out = []
-        for i in range(8):
-            terms = []
-            for theta in range(1, 256):
-                d = (theta >> i & 1) - ((theta - 1) >> i & 1)
-                if d:
-                    terms += c.ge_terms(z, theta, coef=d)
-            out.append(c.node(terms, f"{name}.{tag}{i}"))
-        return out
-
-    return byte_bits(lo, "b") + byte_bits(hi, "b8+")
+    """The 16 bits of an integer x in [0, 65536), in three digit stages (top nibble, next nibble,
+    low byte; each stage's terms sum far below 2^24)."""
+    n1, b_hi = c.digit(x, 4096, 65535, f"{name}.n1", nbits=4)
+    r = x - 4096 * n1
+    n2, b_mid = c.digit(r, 256, 4095, f"{name}.n2", nbits=4)
+    _, b_lo = c.digit(r - 256 * n2, 1, 255, f"{name}.lo", nbits=8, value=False)
+    return b_lo + b_mid + b_hi
 
 
 def score_table(c: ChessCirc, name: str, rows: list, keys: dict, row_bits: dict, lag=False) -> dict:
@@ -485,11 +492,18 @@ def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
     ph_oh = [c.node(c.eq_terms(ph, k), f"ph=={k}") for k in range(24)] + \
             [c.node(c.ge_terms(ph, 24), "ph>=24")]
     e24 = c.node([(1, mg * k + eg * (24 - k), ph_oh[k]) for k in range(25)], "e24")
-    x = e24 + 24 * DIV_M  # >= 0
-    q1 = c.node([t for j in range(1, 512) for t in c.ge_terms(x, 1536 * j)], "div.q1")
-    r1 = x - 1536 * q1
-    q2 = c.node([t for j in range(1, 64) for t in c.ge_terms(r1, 24 * j)], "div.q2")
-    evalv = q1 * 64 + q2 - DIV_M
+    # floor(x / 24) in three digit stages (98304 = 1536 * 64, 1536 = 24 * 64), so that every
+    # stage's terms stay far below 2^24 in sum (fp32-exact in any summation order). q = x // 24
+    # = 4096 q1 + 64 qm + q2, and the stand-pat value eval + OFF = q + 2^14 has bits q2 (0-5),
+    # qm (6-11) and q1 + 4 (12-15), each from its own stage.
+    x = e24 + 24 * DIV_M  # in [0, 2 * 24 * DIV_M)
+    q1, xb_hi = c.digit(x, 98304, 2 * 24 * DIV_M - 1, "div.q1", nbits=4, fn=lambda q: q + 4)
+    r1 = x - 98304 * q1
+    qm, xb_mid = c.digit(r1, 1536, 98303, "div.qm", nbits=6)
+    r2 = r1 - 1536 * qm
+    q2, xb_lo = c.digit(r2, 24, 1535, "div.q2", nbits=6)
+    evalv = 4096 * q1 + 64 * qm + q2 - DIV_M
+    eval_bits = xb_lo + xb_mid + xb_hi  # bits of eval + OFF
     out.update(mg=mg, eg=eg, ph=ph, eval=evalv)
 
     # ---------------------------------------------------------------- depth: check extensions
@@ -506,8 +520,8 @@ def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
     # ---------------------------------------------------------------- stand pat (fresh quiescence nodes)
     qnode = c.node(c.ge_terms(-depth, 0, lits=[one - s2["illegal"], one - plycap, fresh]), "qnode")
     xs = c.node([(1, evalv + OFF, qnode)], "stand.x")  # 0 (= -INF) unless a quiescence node
-    xs_bits = int_bits16(c, xs, "stand")
-    st_bits = {r: [c.node(c.t_and([xs_bits[i], p_oh[r]], a=fresh), f"stand[{r}].b{i}") for i in range(16)]
+    st_bits = {r: [c.node(c.t_and([eval_bits[i], qnode, p_oh[r]], a=fresh), f"stand[{r}].b{i}")
+                   for i in range(16)]
                for r in range(MAX_PLY)}
     stand = score_table(c, "stand", list(range(MAX_PLY)), k_fresh, st_bits)
     out.update(qnode=qnode, stand_x=xs)

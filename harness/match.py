@@ -10,13 +10,14 @@ import chess.pgn
 
 from claude_player import ClaudePlayer
 from codex_player import CodexPlayer
-from players import Qwenputer, SearchMachine
+from players import Fishnet, Qwenputer, SearchMachine
 
 spec, qcolor, tag = sys.argv[1], sys.argv[2], sys.argv[3]
 os.makedirs("games", exist_ok=True)
 log_dir = f"logs/{tag}"
 os.makedirs(log_dir, exist_ok=True)
-q = SearchMachine(int(spec[1:])) if spec.startswith("d") else Qwenputer(int(spec))
+q = (Fishnet() if spec == "fishnet" else SearchMachine(int(spec[1:])) if spec.startswith("d")
+     else Qwenputer(int(spec)))
 opp = sys.argv[4] if len(sys.argv) > 4 and not sys.argv[4].startswith("--") else "opus"
 llm = (ClaudePlayer(model="claude-opus-5-5", effort="high", log_dir=log_dir) if opp == "opus"
        else CodexPlayer(model="gpt-6-astra", effort="high", log_dir=log_dir))

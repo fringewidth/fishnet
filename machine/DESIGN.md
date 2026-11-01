@@ -51,8 +51,36 @@ target; (d) next from-square with a quiet move, first target; 384-slot priority 
 (victim value desc, square) and (attacker value asc, square). 6. Cases (illegal, ply cap, stand
 pat cut, beta cut, move, no move / mate / stalemate, root DONE, anchors) -> the next token.
 
+## The bridge (stage 6)
+
+Qwen writes a tool call holding the FEN; the circuit reads it from Qwen's own tokens. A line
+starts after a newline; its field is the number of spaces so far, and it turns dirty at a token
+a FEN cannot hold. In field 0 of a clean line inside <tool_call>, a square cursor (four counters,
+one per bit of each token's width) gives each token's first square, and the token writes its
+squares into 8 per-file tables (a token covers at most 8 consecutive squares, so at most one per
+file). Fields 1-3 set side, castling and en passant. At </tool_call> the circuit owns the
+stream: 64 PUT(square, piece) tokens load the root board (one row per square, read at the bottom
+layer like the diff stack), START(depth, side, castling, ep) starts the search, a BM row records
+the root move at every root improvement, and after DONE the circuit prints
+"<tool_response>\ne2e4\n</tool_response>\n" as Qwen tokens; Qwen speaks again after it.
+
+The model starts from an all-zero state (no snapshot): every summed table keeps its ballast in
+one extra row written at a setup token (TCO for the FEN tables, TCC for the root board, PUT(0)
+for the search tables), and reads are 0 before it.
+
+## fp32 summation spans
+
+The IR evaluator sums in float64. The hardware sums every projection and MLP output in some order
+in fp32, which is exact only if the sum of the terms' absolute values stays below 2^24. A
+threshold node `sum_j [x >= theta_j]` over a wide x violates this (the relu pairs cancel only at
+the end), so wide divisions and bit extractions are done in digit stages (`ChessCirc.digit`),
+each with a small span; the digit stages also give the bits of their digit directly.
+`circuit/spans.py` measures every span on an evaluated stream.
+
 ## Status
 
-Stages 1-5 exact against the spec (22 layers before depth optimisation, ~40k MLP units, 24
-heads). Next: the bridge to Qwen (FEN read from text via width counters into summed root rows;
-START; printing bestmove), the output code, emit / merge into Qwen3.5-4B, a GPU run.
+Stages 1-6 exact against the spec: `test_bridge.py` (0 mismatches over 13,596 positions of five
+exchanges, from an all-zero state), the repo's fast executor equal to the IR evaluator, spans
+below 2^24. 23 layers, ~42k MLP units, 51 heads, 3,201 residual slots: the merged model has
+hidden size 5,888. Next: `merge.py` on a GPU box (fp32 chip layers), `play.py` with
+`--verify` (HF modules == executor) and `--check-head`, then games.

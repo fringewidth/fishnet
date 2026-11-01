@@ -15,27 +15,22 @@ from chipformer.q35.ir import A_BIT, A_REF, REF_COLS  # noqa: E402
 
 
 def initial_carry(c, root_abs: dict) -> dict:
-    """Initial head states: every row of a summed table holds its ballast; DIFF row 0 holds the
-    root board."""
+    """Initial head states: every summed table's ballast row is set; the root-board tables hold
+    the root board (as the bridge's TCC and PUT tokens leave them)."""
     carry = {}
     for ni, node in enumerate(c.nodes):
         if node.name not in c.multi:
             continue
-        rows = {}
-        for r in c.multi[node.name]:
-            row = np.zeros(node.n_cols)
-            row[list(REF_COLS)] = A_REF
-            if r == 0 and node.name.startswith("diff"):
-                for col, ch in node.v.items():
-                    if col in REF_COLS:
-                        continue
-                    name = c.dims[next(iter(ch.expr.terms))].name  # e.g. d.add[12].b0
-                    if name.startswith("d.add["):
-                        s = int(name[6:name.index("]")])
-                        bit = int(name.rsplit("b", 1)[1])
-                        if root_abs.get(s, 0) >> bit & 1:
-                            row[col] = A_BIT
-            rows[r] = row
+        bal = np.zeros(node.n_cols)
+        bal[list(REF_COLS)] = A_REF
+        rows = {B.BAL: bal}
+        if node.name.startswith("rb"):
+            bit = int(node.name[2:])
+            for r in c.multi[node.name]:
+                row = np.zeros(node.n_cols)
+                if root_abs.get(r, 0) >> bit & 1:
+                    row[2 + r] = A_BIT
+                rows[r] = row
         carry[ni, "S", 0] = rows
     return carry
 

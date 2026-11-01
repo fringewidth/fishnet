@@ -1,0 +1,21 @@
+stage5 6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1.. d3: 1286 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 5s
+stage5 r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPP.. d3: 5350 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 36s
+stage5 7k/5Q2/6K1/8/8/8/8/8 b - - 0 1.. d3: 7 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 1s
+stage5 k7/8/1K6/8/8/8/8/7R w - - 0 1.. d3: 1196 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 5s
+stage5 8/P7/8/8/8/8/8/k6K w - - 0 1.. d3: 1104 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 5s
+stage5 2kq1br1/2p4p/rpn1p1P1/pbP3Q1/P2NP3/1P1p3.. d2: 7058 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 48s
+stage5 r2k4/pP1N3r/n2ppppp/3q3b/B1Q3R1/3P4/1PP1.. d2: 2819 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 12s
+stage5 1rb5/2k4p/Bqp1p1r1/p2p1ppP/5bP1/P1P1PQP1.. d2: 2985 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 12s
+stage5 3k1r2/2R4p/3p1N1b/8/1ppPPPb1/2P1K1P1/3n4.. d2: 3336 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 22s
+stage5 2r3n1/3kb1p1/2ppNp2/1BnP4/q1P3p1/4P1Nr/1.. d2: 3557 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 24s
+stage5 rnbqkbnr/p1pp1ppp/4p3/1p6/2P5/3P4/PP1NPP.. d2: 337 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 2s
+stage5 1rb1q1nr/1R1pk3/p4bp1/P3P2p/N1P1PPPP/8/4.. d2: 1095 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 5s
+stage5 r1b1k1nr/p2p4/qp1Pn3/2p1b2p/1QP4P/P5p1/R.. d2: 1342 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 6s
+stage5 r2qkb1r/p3pp1p/7n/npPp2p1/8/P3PQ1N/1P1P1.. d2: 2538 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 10s
+stage5 r4b2/1bp3r1/2P3pp/P3k3/P6q/1N1p2P1/3P1PB.. d2: 1170 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 5s
+stage5 7b/4p2r/P2p3n/4k1qp/1PPpPp2/B4b2/R5B1/1N.. d2: 813 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 3s
+stage5 2bq2nr/r2p1p1p/1pn1k1p1/p2p4/PbP1p2P/R4P.. d2: 1407 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 6s
+stage5 r3k1r1/p1pqn2p/4ppp1/1Pnb2b1/P2P1PPN/4K3.. d3: 12499 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 85s
+stage5 2b1kbnr/rp2pp2/5n2/q1p3pp/p3PPP1/N2pB1NB.. d3: 16978 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 117s
+stage5 2r4r/p1p1k3/2Qb2qp/3Ppp2/2P1n1PP/p2KPN2/.. d3: 33862 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 9570, 'heads': 24, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 8}, eval 261s
+BROAD TOTAL mismatches 0 over 20 searches

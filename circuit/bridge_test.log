@@ -1,0 +1,4 @@
+built {'layers': 24, 'dims': 11155, 'heads': 51, 'ffn_units': 46338, 'max_units': 9214, 'max_heads': 16} in 3s
+stream 13597 tokens; runs [('r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4', 'h5f7', 1189), ('rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/RNBQKBNR w KQkq f6 0 3', 'f1b5', 1402), ('8/P7/8/8/8/k7/8/7K w - - 0 1', 'a7a8q', 259), ('r3k2r/ppp2ppp/2nq1n2/3pp3/1b1PP1b1/2N2N2/PPPQBPPP/R3K2R b Qk d3 0 8', 'f6e4', 9865), ('8/8/8/8/2pP4/8/1k6/4K3 b - d3 0 1', 'c4d3', 57)]
+evaluated in 107s
+BRIDGE mismatches 0 over 13596 positions (13138 circuit-owned)

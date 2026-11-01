@@ -1,0 +1,1 @@
+stage5 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK.. d2: 231 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 10213, 'heads': 28, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 9}, eval 2s

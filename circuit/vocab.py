@@ -7,6 +7,8 @@ Families (ids from 0, in this order):
   RET(s) for s in [-INF, INF], RET_ILLEGAL
   PLY(p) and PLY_IMP(p) for p in 0..31
   DONE
+  PUT(s, code 0..12)                   the bridge loads the root board, one square per token
+Text tokens (Qwen's vocabulary) are TEXT0 + qwen id.
 """
 import sys
 
@@ -72,7 +74,9 @@ RET_ILLEGAL = _family("RET_ILLEGAL", 1)
 PLY0 = _family("PLY", MAX_PLY)
 PLY_IMP0 = _family("PLY_IMP", MAX_PLY)
 DONE = _family("DONE", 1)
+PUT0 = _family("PUT", 64 * 13)
 VOCAB = _base
+TEXT0 = 1 << 20
 MOVE_INDEX = {m: i for i, m in enumerate(MOVES)}
 
 
@@ -91,10 +95,16 @@ def encode(tok: tuple) -> int:
         return (PLY0 if k == "PLY" else PLY_IMP0) + tok[1]
     if k == "DONE":
         return DONE
+    if k == "PUT":
+        return PUT0 + tok[1] * 13 + tok[2]
+    if k == "TEXT":
+        return TEXT0 + tok[1]
     raise ValueError(tok)
 
 
 def decode(i: int) -> tuple:
+    if i >= TEXT0:
+        return ("TEXT", i - TEXT0)
     for name, base, size in FAMILIES:
         if base <= i < base + size:
             j = i - base
@@ -108,6 +118,8 @@ def decode(i: int) -> tuple:
                 return ("RET", j - INF)
             if name in ("PLY", "PLY_IMP"):
                 return (name, j)
+            if name == "PUT":
+                return ("PUT", j // 13, j % 13)
             return (name,)
     raise ValueError(i)
 
@@ -115,6 +127,7 @@ def decode(i: int) -> tuple:
 if __name__ == "__main__":
     print("geometric (f,t,pk):", len(GEO), " move tokens:", len(MOVES), " vocab:", VOCAB)
     for t in [("START", 5, 1, 15, 8), ("MOVE", 12, 28, 1, 0, 1), ("MOVE_IMP", 4, 6, 6, 0, 1), ("RET", -31000),
-              ("RET_ILLEGAL",), ("PLY_IMP", 7), ("DONE",)]:
+              ("RET_ILLEGAL",), ("PLY_IMP", 7), ("DONE",),
+              ("PUT", 63, 12), ("PUT", 5, 0), ("TEXT", 248000)]:
         assert decode(encode(t)) == t, t
     print("round trip ok")

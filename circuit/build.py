@@ -19,14 +19,19 @@ T4B = Target(key_heads=16, value_heads=32, intermediate=9216)
 NCNT = 60  # decay counters are decoded up to this many events since the anchor
 BIG = 1 << 20  # literal weight in fp32 threshold units (> any integer range they test)
 DATA_COLS = list(range(2, 128))  # value columns a head row can hold data in
+BAL = 127  # the ballast row of a summed table
 
 
 class ChessCirc(Circ):
-    def __init__(self, target: Target | None = None) -> None:
+    def __init__(self, target: Target | None = None, text=None) -> None:
         super().__init__(target or T4B)
         self.tables = {}  # name -> head node, for initial-state snapshots
         self.multi = {}  # name -> slots of tables read as a sum over rows (every row needs its ballast)
+        self.text = text
         self._features()
+        self._put_features()
+        if text is not None:
+            self._text_features()
 
     # ------------------------------------------------------------------ token features
 
@@ -95,6 +100,78 @@ class ChessCirc(Circ):
                       for s in range(64)]
         self.d_lost = [self.feat(f"d.lost.b{i}", diff_bit("lost", 0, i)) for i in range(4)]
 
+    def _put_features(self) -> None:
+        """PUT(s, code): the bridge's root-board tokens (and the square the next one names)."""
+        def put(t):
+            d = V.decode(t)
+            return (d[1], d[2]) if d[0] == "PUT" else None
+
+        self.isPUT = self.feat("isPUT", lambda t: int(put(t) is not None))
+        self.put_sq = [self.feat(f"put.sq[{s}]", lambda t, s=s: int((put(t) or (-1, 0))[0] == s))
+                       for s in range(64)]
+        self.put_bit = [[self.feat(f"put.b{i}@{s}", lambda t, s=s, i=i: int((put(t) or (-1, 0))[0] == s
+                                                                            and put(t)[1] >> i & 1))
+                         for s in range(64)] for i in range(4)]
+
+        def nxt(t):
+            if self.text is not None and t == V.TEXT0 + self.text.TCC:
+                return 0
+            p = put(t)
+            return p[0] + 1 if p is not None and p[0] < 63 else None
+
+        tcc = V.TEXT0 + self.text.TCC if self.text is not None else -1
+        self.isTCC = self.feat("isTCC", lambda t: int(t == tcc))
+        self.put_next = [self.feat(f"put.next[{s}]", lambda t, s=s: int(nxt(t) == s)) for s in range(64)]
+        self.put_last = self.feat("put.last", lambda t: int((put(t) or (-1, 0))[0] == 63))
+
+    def _text_features(self) -> None:
+        """Text tokens (TEXT0 + Qwen id): what the FEN reader needs from a token's bytes."""
+        T, t0 = self.text, V.TEXT0
+        info = T.fen_info
+
+        def tinfo(t):
+            return info.get(t - t0) if t >= t0 else None
+
+        def flag(key):
+            return lambda t: int(bool((tinfo(t) or {}).get(key, 0)))
+
+        self.is_text = self.feat("is_text", lambda t: int(t >= t0))
+        self.isTCO = self.feat("isTCO", lambda t: int(t == t0 + T.TCO))
+        # a line starts after a newline (and at <tool_call>); counters reset there
+        self.t_reset = self.feat("t.reset", lambda t: int(t == t0 + T.TCO or bool((tinfo(t) or {}).get("nl"))))
+
+        def nr(fn):
+            return lambda t: int(fn(t) and not (t == t0 + T.TCO or (tinfo(t) or {}).get("nl")))
+
+        self.t_space = self.feat("t.space", nr(flag("space")))
+        self.t_fenok = self.feat("t.fenok", flag("fenok"))
+        self.t_notfen = self.feat("t.notfen", nr(lambda t: t >= t0 and not (tinfo(t) or {}).get("fenok")))
+        self.t_boardok = self.feat("t.boardok", flag("boardok"))
+        self.t_notboard = self.feat("t.notboard", nr(lambda t: t >= t0 and not (tinfo(t) or {}).get("boardok")))
+
+        def codes(t):
+            return (tinfo(t) or {}).get("codes") or []
+
+        self.t_wb = [self.feat(f"t.w.b{b}", lambda t, b=b: len(codes(t)) >> b & 1) for b in range(4)]
+        self.t_wgt = [self.feat(f"t.w>{k}", lambda t, k=k: int(len(codes(t)) > k)) for k in range(8)]
+        self.t_code = [[self.feat(f"t.code{k}.b{i}", lambda t, k=k, i=i: (codes(t)[k] >> i & 1)
+                                  if k < len(codes(t)) else 0) for i in range(4)] for k in range(8)]
+        self.t_has = {ch: self.feat(f"t.has.{ch}", flag("has_" + ch)) for ch in "wbKQkq"}
+        self.t_file = [self.feat(f"t.file{x}", lambda t, x=x: int((tinfo(t) or {}).get("file") == x))
+                       for x in range(8)]
+        # the output code (a token's own, in its embedding row; the exit overwrites it), mu, tau
+        self._code_cache = {}
+
+        def code_of(t):
+            if t not in self._code_cache:
+                self._code_cache[t] = token_code(t, T)
+            return self._code_cache[t]
+
+        self.code = [self.feat(f"code{i}", lambda t, i=i: 0 if (cb := code_of(t)) is None
+                               else CODE_AMP * (2 * cb[i] - 1)) for i in range(NFAM + NPAY)]
+        self.mu = self.feat("mu", lambda t: int(t < t0))  # Qwen is muted on chip tokens
+        self.tau = self.feat("tau", lambda t: TAU_TEXT if t >= t0 else -1)
+
     # ------------------------------------------------------------------ fp32 gadgets
 
     def ge_terms(self, z, theta, lits=(), coef=1):
@@ -127,21 +204,24 @@ class ChessCirc(Circ):
 
     # ------------------------------------------------------------------ heads
 
-    def multi_read(self, name, slots, keys, data_cols, ref, beta=None, rows_read=None):
-        """A table whose reads sum every slot in ``slots`` (each row keeps its ballast, so the
-        sum is normalised by the slot count, a power of 2). keys: slot -> 0/1 form; data_cols:
-        column -> 0/1 form (one value head, <= 126 columns). Returns one dim per data column
-        holding the column's sum over the rows."""
-        n = len(slots) if rows_read is None else rows_read
-        assert n & (n - 1) == 0, "the slot count must be a power of 2"
+    def multi_read(self, name, slots, keys, data_cols, init, beta=None):
+        """A table whose reads sum every row in ``slots``. Data rows carry no ballast; one extra
+        row (BAL) holds it, written at the ``init`` token, so a read is the exact column sum of
+        the data rows once that token has passed (and 0 before it). keys: slot -> 0/1 form;
+        data_cols: column -> 0/1 form (one value head, <= 126 columns). Returns one dim per data
+        column holding the column's sum over the rows."""
+        assert BAL not in slots
         v = {col: chan(e, A_BIT) for col, e in data_cols.items()}
         for col in REF_COLS:
-            v[col] = chan(ref, A_REF)
+            v[col] = chan(init, A_REF)
         cols = sorted(data_cols)
-        out = self.head(name, {s: sel(self, self.one) for s in slots},
+        keys = dict(keys)
+        keys[BAL] = init
+        out = self.head(name, {s: sel(self, self.one) for s in [*slots, BAL]},
                         {s: sel(self, e) for s, e in keys.items()}, v, 0,
-                        {col: 128 * self.one for col in cols}, [(col, 2.0**7 * n) for col in cols],
-                        beta=beta)
+                        {col: 128 * self.one for col in cols}, [(col, 2.0**7) for col in cols],
+                        beta=None if beta is None else beta + init)
+        self.nodes[-1].qhot = len(slots) + 1
         self.tables[name] = self.nodes[-1]
         self.multi[name] = list(slots)
         return out
@@ -189,10 +269,13 @@ def build_stage1(c: ChessCirc) -> dict:
     for h in range(0, len(cols), len(DATA_COLS)):
         chunk = cols[h:h + len(DATA_COLS)]
         data = {DATA_COLS[j]: e for j, (_, _, _, e) in enumerate(chunk)}
-        res = c.multi_read(f"diff{h // len(DATA_COLS)}", list(range(MAX_PLY)), keys, data, one)
+        res = c.multi_read(f"diff{h // len(DATA_COLS)}", list(range(MAX_PLY)), keys, data, c.put_sq[0])
         for (kind, s, i, _), d in zip(chunk, res):
             sums[kind, s, i] = d
-    code = [sum(((sums["add", s, i] - sums["rem", s, i]) * (1 << i) for i in range(4)), Expr())
+    # the root board: one row per square, written by its PUT token (a bit plane per head)
+    rb = [c.multi_read(f"rb{i}", list(range(64)), {s: c.put_sq[s] for s in range(64)},
+                       {2 + s: c.put_bit[i][s] for s in range(64)}, c.isTCC, beta=c.isPUT) for i in range(4)]
+    code = [sum(((sums["add", s, i] - sums["rem", s, i] + rb[i][s]) * (1 << i) for i in range(4)), Expr())
             for s in range(64)]
     board = [[c.node(c.eq_terms(code[s], k), f"abs[{s}]=={k}") for k in range(1, 13)] for s in range(64)]
     lost = [sums["lost", 0, i] for i in range(4)]
@@ -374,7 +457,7 @@ def score_table(c: ChessCirc, name: str, rows: list, keys: dict, row_bits: dict,
     for h in range(0, len(cols), per):
         chunk = cols[h:h + per]
         data = {DATA_COLS[j]: row_bits[r][i] for j, (r, i) in enumerate(chunk)}
-        res = c.multi_read(f"{name}{h // per}", rows, keys, data, c.one)
+        res = c.multi_read(f"{name}{h // per}", rows, keys, data, c.put_sq[0])
         for (r, i), d in zip(chunk, res):
             vals[r] = vals[r] + d * (1 << i)
     return vals
@@ -411,11 +494,12 @@ def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
 
     # ---------------------------------------------------------------- depth: check extensions
     plycap = p_oh[MAX_PLY - 1]
-    ext_flag = c.node(c.t_and([s2["in_check"], one - s2["illegal"], one - plycap, fresh]), "ext.flag")
+    # (gated by `fresh` as a factor: the operands are not 0/1 on tokens before the tables are set up)
+    ext_flag = c.node(c.t_and([s2["in_check"], one - s2["illegal"], one - plycap], a=fresh), "ext.flag")
     k_fresh = {r: c.node(c.t_and([fresh, p_oh[r]]), f"kfresh[{r}]") for r in range(MAX_PLY)}
     k_ext = {r: c.node(c.t_and([fresh, p_oh[r]]) + (c.t_and([c.isRET, p_oh[r - 1]]) if r else []),
                        f"kext[{r}]") for r in range(MAX_PLY)}
-    (ext_sum,) = c.multi_read("ext", list(range(MAX_PLY)), k_ext, {2: ext_flag}, one)
+    (ext_sum,) = c.multi_read("ext", list(range(MAX_PLY)), k_ext, {2: ext_flag}, c.put_sq[0])
     depth = s2["root_depth"] - P + ext_sum
     out.update(depth=depth, ext_flag=ext_flag)
 
@@ -423,7 +507,7 @@ def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
     qnode = c.node(c.ge_terms(-depth, 0, lits=[one - s2["illegal"], one - plycap, fresh]), "qnode")
     xs = c.node([(1, evalv + OFF, qnode)], "stand.x")  # 0 (= -INF) unless a quiescence node
     xs_bits = int_bits16(c, xs, "stand")
-    st_bits = {r: [c.node(c.t_and([xs_bits[i], p_oh[r], fresh]), f"stand[{r}].b{i}") for i in range(16)]
+    st_bits = {r: [c.node(c.t_and([xs_bits[i], p_oh[r]], a=fresh), f"stand[{r}].b{i}") for i in range(16)]
                for r in range(MAX_PLY)}
     stand = score_table(c, "stand", list(range(MAX_PLY)), k_fresh, st_bits)
     out.update(qnode=qnode, stand_x=xs)
@@ -569,6 +653,7 @@ def build_stage4(c: ChessCirc, s1: dict, s2: dict, s3: dict) -> dict:
                                f"{tag}[{s}]"))
         return out_
 
+    out["cur_bits"] = cb
     cf = rel_onehot(cb["f"], "cur.f")  # relative one-hots (all 0 without a cursor)
     ct = rel_onehot(cb["t"], "cur.t")
     pk_oh = [c.node(c.t_and([b if k >> i & 1 else one - b for i, b in enumerate(cb["pk"])] + [has_cur]),
@@ -777,3 +862,267 @@ def build_stage5(c: ChessCirc, s1: dict, s2: dict, s3: dict, s4: dict) -> dict:
     out.update(kinds=k, abs_f=abs_f, abs_t=abs_t, pk=pk, xk=xk + [xk_ep], white=stm_white,
                ret_score=ret_score, P=P, improved=improved)
     return out
+
+
+# ====================================================================== stage 6: the bridge to Qwen
+
+FAMS = ["START", "MOVE", "MOVE_IMP", "RET", "RET_ILLEGAL", "PLY", "PLY_IMP", "DONE", "PUT", "Q"]
+FAM_ID = {n: i for i, n in enumerate(FAMS)}
+NFAM = 4
+NPAY = 19
+CODE_AMP = 128  # a token's own code in its (tied) embedding row: CODE_AMP * (2 bit - 1)
+KAPPA = 2.0**-20  # the predicted code after the exit: KAPPA * (2 bit - 1)
+TAU_TEXT = 2.0**-40  # tau on text tokens; -1 on chip tokens (q35.merge)
+DEPTH = 4  # the search depth START carries
+
+
+def payload(tok: tuple) -> int:
+    """A chip token's output-code payload (any injective layout: the code is matched against
+    the tied embedding, not decoded by arithmetic)."""
+    k = tok[0]
+    if k == "START":
+        _, depth, white, castle, ep_file = tok
+        return depth | white << 4 | castle << 5 | ep_file << 9
+    if k in ("MOVE", "MOVE_IMP"):
+        _, f, t, pk, xk, white = tok
+        return f | t << 6 | pk << 12 | xk << 15 | white << 18
+    if k == "RET":
+        return tok[1] + OFF
+    if k in ("PLY", "PLY_IMP"):
+        return tok[1]
+    if k == "PUT":
+        return tok[1] | tok[2] << 6
+    return 0
+
+
+def code_bits(fam: str, p: int) -> list:
+    fid = FAM_ID[fam]
+    return [fid >> i & 1 for i in range(NFAM)] + [p >> i & 1 for i in range(NPAY)]
+
+
+def token_code(t: int, text) -> list | None:
+    """The output-code bits of a token: a chip token's, or a printable text token's (Q)."""
+    if t >= V.TEXT0:
+        p = text.print_index.get(t - V.TEXT0) if text is not None else None
+        return None if p is None else code_bits("Q", p)
+    d = V.decode(t)
+    return code_bits(d[0], payload(d))
+
+
+def decode_code(bits: list, text) -> int:
+    """The token with these output-code bits, or -1."""
+    fid = sum(b << i for i, b in enumerate(bits[:NFAM]))
+    p = sum(b << i for i, b in enumerate(bits[NFAM:]))
+    if fid >= len(FAMS):
+        return -1
+    k = FAMS[fid]
+    try:
+        if k == "Q":
+            q = text.print_ids.get(p)
+            return -1 if q is None else V.TEXT0 + q
+        if k == "START":
+            return V.encode(("START", p & 15, p >> 4 & 1, p >> 5 & 15, p >> 9 & 15))
+        if k in ("MOVE", "MOVE_IMP"):
+            return V.encode((k, p & 63, p >> 6 & 63, p >> 12 & 7, p >> 15 & 7, p >> 18 & 1))
+        if k == "RET":
+            return V.encode(("RET", p - OFF))
+        if k in ("PLY", "PLY_IMP"):
+            return V.encode((k, p))
+        if k == "PUT":
+            return V.encode(("PUT", p & 63, p >> 6))
+        return V.encode((k,))
+    except (KeyError, ValueError):
+        return -1
+
+
+def build_bridge_read(c: ChessCirc) -> dict:
+    """The FEN reader: Qwen's text inside <tool_call> ... </tool_call>, one token at a time.
+
+    A line starts after a newline. Its field = the spaces so far; it is dirty once it has a token
+    a FEN cannot hold (or a non-board token in field 0). Field 0 of a clean line inside a tool
+    call is the board: a square cursor (FEN order) counts the squares of the tokens so far, and
+    each token writes its squares into 8 tables, one per file (a token covers at most 8
+    consecutive squares, so at most one per file), one row per rank. Fields 1-3 set the side,
+    castling and en passant tables (cleared at field 1)."""
+    one = c.one
+    out = {}
+    ((armed,),) = thead(c, "armed", {0: one}, {0: one},
+                        [{"data": {2: c.isTCO}, "ref": one, "beta": c.isTCO + c.isTCC}])
+    c.tables["armed"] = c.nodes[-1]
+    reset = c.t_reset
+    x_sp = c.counter("cnt.space", reset, c.t_space)
+    th_sp = c.thermo(x_sp, reset, 4, "fs")
+    f0, f1, f2, f3 = one - th_sp[0], th_sp[0] - th_sp[1], th_sp[1] - th_sp[2], th_sp[2] - th_sp[3]
+    dirty_tok = c.t_notfen + c.node(c.t_and([f0, c.t_notboard, c.t_fenok]), "dirty.f0")
+    x_dirty = c.counter("cnt.dirty", reset, dirty_tok)
+    clean = one - c.thermo(x_dirty, reset, 1, "dirty")[0]
+    # the square cursor: sum over the line's tokens of their width, counted per width bit
+    count = Expr()
+    for b in range(4):
+        xb = c.counter(f"cnt.w{b}", reset, c.t_wb[b])
+        count = count + (1 << b) * sum(c.thermo(xb, reset, 64 >> b, f"w{b}"), Expr())
+    width = sum((c.t_wb[b] * (1 << b) for b in range(4)), Expr())
+    cur = count - width  # squares before this token
+    phase = [armed, f0, clean, c.t_boardok]
+    at = [c.node(c.eq_terms(cur, n, lits=phase), f"fen.at{n}") for n in range(64)]
+    fen = {}
+    for j in range(8):
+        keys, data = {}, {}
+        for r in range(8):
+            n = 8 * r + j
+            ks = [(at[n - k], k) for k in range(8) if n - k >= 0]
+            keys[r] = c.node([u for a, k in ks for u in c.t_and([a, c.t_wgt[k]])], f"fen{j}.k{r}")
+            for i in range(4):
+                data[2 + 4 * r + i] = c.node([u for a, k in ks for u in c.t_and([a, c.t_code[k][i]])],
+                                             f"fen{j}.r{r}b{i}")
+        beta = sum(keys.values(), Expr())
+        res = c.multi_read(f"fen{j}", list(range(8)), keys, data, c.isTCO, beta=beta)
+        for r in range(8):
+            for i in range(4):
+                fen[j, r, i] = res[4 * r + i]
+    # side, castling, en passant (one row each; field 1 clears / sets them)
+    at1 = c.node(c.t_and([armed, clean, f1]), "fen.f1")
+    (side,) = thead(c, "side", {0: one}, {0: one},
+                    [{"data": {2: c.t_has["w"]}, "ref": one,
+                      "beta": c.node(c.t_and([at1, c.t_has["w"] + c.t_has["b"]]), "side.w")}])
+    c.tables["side"] = c.nodes[-1]
+    castle = []
+    for ch in "KQkq":  # absolute rights 1 WK, 2 WQ, 4 BK, 8 BQ
+        (cr,) = thead(c, f"castle.{ch}", {0: one}, {0: one},
+                      [{"data": {2: c.t_has[ch]}, "ref": one,
+                        "beta": at1 + c.node(c.t_and([armed, clean, f2, c.t_has[ch]]), f"castle.{ch}.w")}])
+        c.tables[f"castle.{ch}"] = c.nodes[-1]
+        castle.append(cr[0])
+    any_file = sum(c.t_file, Expr())
+    (ep,) = thead(c, "fen.ep", {0: one}, {0: one},
+                  [{"data": {2 + x: c.node(c.t_and([f3, c.t_file[x]]), f"fen.ep{x}") for x in range(8)},
+                    "ref": one, "beta": at1 + c.node(c.t_and([armed, clean, f3, any_file]), "fen.ep.w")}])
+    c.tables["fen.ep"] = c.nodes[-1]
+    out.update(fen=fen, side=side[0], castle=castle, ep=ep, armed=armed, cur=cur, f=(f0, f1, f2, f3),
+               clean=clean)
+    return out
+
+
+def build_stage6(c: ChessCirc, s1: dict, s2: dict, s3: dict, s4: dict, s5: dict, br: dict,
+                 depth: int = DEPTH) -> dict:
+    """PUT / START emission, the best root move (BM), its echo as text, and the exit (the output
+    code, ownership and tau as in rv/core.py)."""
+    one, is_ = c.one, c.is_
+    k = s5["kinds"]
+    out = {}
+
+    # ---------------------------------------------------------------- the root move (BM)
+    bm_on = c.node(c.t_and([s5["improved"], s1["p_oh"][0]]), "bm.w")
+    cb = s4["cur_bits"]
+    (bm,) = thead(c, "bm", {0: one}, {0: one},
+                  [{"data": {2 + i: e for i, e in enumerate(cb["f"] + cb["t"] + cb["pk"])}, "ref": one,
+                    "beta": bm_on}])
+    c.tables["bm"] = c.nodes[-1]
+    bf, bt, bpk = bm[0:6], bm[6:12], bm[12:15]
+    promo = c.node(c.t_and([bpk[0], one - bpk[1], one - bpk[2], bt[3], bt[4], bt[5]])
+                   + c.t_and([bpk[0], one - bpk[1], one - bpk[2], one - bt[3], one - bt[4], one - bt[5]]),
+                   "bm.promo")
+
+    # ---------------------------------------------------------------- the echo after DONE
+    xp = c.counter("cnt.print", is_["DONE"], one - is_["DONE"])
+    jt = c.thermo(xp, is_["DONE"], 10, "pj")
+    jeq = {v: jt[v - 1] - jt[v] for v in range(1, 10)}
+
+    # ---------------------------------------------------------------- cases: (gate, lits, family, payload bits)
+    # gate: an exact 0/1 token-feature form that multiplies the case (operands that are not
+    # 0/1 on other tokens cannot fire it); lits: 0/1 conditions
+    is_search = is_["START"] + c.isMOVE + c.isRET + c.isPLY
+    cases = []
+
+    def bits_of_onehot(oh, n, base=0):
+        return [sum((e for v, e in enumerate(oh) if (v + base) >> i & 1), Expr()) for i in range(n)]
+
+    # PUT: at </tool_call> and at PUT(s < 63)
+    fen = br["fen"]
+    put_code = []
+    for i in range(4):
+        terms = []
+        for s in range(64):
+            j, r = s % 8, 7 - s // 8
+            terms.append((1, c.put_next[s], fen[j, r, i]))
+        put_code.append(c.node(terms, f"put.code.b{i}"))
+    put_go = c.isTCC + c.isPUT - c.put_last
+    cases.append((put_go, [], "PUT", bits_of_onehot(c.put_next, 6) + put_code))
+    # START after PUT(63)
+    ep = br["ep"]
+    ep_none = one - sum(ep, Expr())
+    st_pay = [one if depth >> i & 1 else Expr() for i in range(4)] + [br["side"]] + br["castle"] \
+        + bits_of_onehot(ep, 3) + [ep_none]
+    cases.append((c.put_last, [], "START", st_pay))
+    # the search
+    F = bits_of_onehot(s5["abs_f"], 6)
+    Tt = bits_of_onehot(s5["abs_t"], 6)
+    pk = bits_of_onehot(s5["pk"], 3, base=1)
+    xk = bits_of_onehot(s5["xk"], 3, base=1)
+    mv_pay = F + Tt + pk + xk + [s5["white"]]
+    for nm in ("MOVE", "MOVE_IMP"):
+        cases.append((is_search, [k[nm]], nm, mv_pay))
+    ret_bits = int_bits16(c, s5["ret_score"] + OFF, "ret")
+    cases.append((is_search, [k["RET"]], "RET", ret_bits))
+    cases.append((is_search, [k["RET_ILLEGAL"]], "RET_ILLEGAL", []))
+    p_bits = bits_of_onehot(s1["p_oh"], 5)
+    for nm in ("PLY", "PLY_IMP"):
+        cases.append((is_search, [k[nm]], nm, p_bits))
+    cases.append((is_search, [k["DONE"]], "DONE", []))
+    # the echo: <tool_response> \n f t [q] \n </tool_response> \n (Qwen speaks after the last);
+    # j = tokens since DONE
+    def q(v):
+        return [one if v >> i & 1 else Expr() for i in range(5)]
+
+    cases.append((is_["DONE"], [], "Q", q(0)))
+    tx = c.is_text
+    cases.append((tx, [jeq[1]], "Q", q(1)))
+    cases.append((tx, [jeq[2]], "Q", bf[0:3] + [one, Expr()]))
+    cases.append((tx, [jeq[3]], "Q", bf[3:6] + [Expr(), one]))
+    cases.append((tx, [jeq[4]], "Q", bt[0:3] + [one, Expr()]))
+    cases.append((tx, [jeq[5]], "Q", bt[3:6] + [Expr(), one]))
+    cases.append((tx, [jeq[6], promo], "Q", q(2)))
+    cases.append((tx, [jeq[6], one - promo], "Q", q(1)))
+    cases.append((tx, [jeq[7], promo], "Q", q(1)))
+    cases.append((tx, [jeq[7], one - promo], "Q", q(3)))
+    cases.append((tx, [jeq[8], promo], "Q", q(3)))
+    cases.append((tx, [jeq[8], one - promo], "Q", q(1)))
+    cases.append((tx, [jeq[9], promo], "Q", q(1)))
+    owner = c.node([(1, c.isTCC + c.isPUT + is_search + is_["DONE"], one)]
+                   + c.t_and([sum((jeq[v] for v in range(1, 9)), Expr())], a=tx)
+                   + c.t_and([jeq[9], promo], a=tx), "owner")
+    c.owner = owner
+
+    # ---------------------------------------------------------------- the exit
+    exit_min = max(n.level for n in c.nodes)
+    for e in c.code:
+        c.ffn([(-1, one, e), (1, one, -1 * e)], "code.clear", into=e)
+    for i, e in enumerate(c.code):
+        terms = c.t_and([owner], -KAPPA)
+        for gate, lits, fam, pay in cases:
+            if i < NFAM:
+                if FAM_ID[fam] >> i & 1:
+                    terms += c.t_and(lits + [owner], 2 * KAPPA, a=gate)
+            else:
+                b = i - NFAM
+                if b < len(pay) and pay[b].terms:
+                    terms += c.t_and(lits + [pay[b], owner], 2 * KAPPA, a=gate)
+        c.ffn(terms, f"exit.code{i}", into=e, min_level=exit_min)
+    c.keep = [next(iter(e.terms)) for e in c.code]
+    c.ffn([(1, c.mu, one)] + c.t_and([owner, c.is_text], -TAU_TEXT), "exit.tau", into=c.tau,
+          min_level=exit_min)
+    c.keep += [next(iter(c.tau.terms)), next(iter(c.mu.terms))]
+    out.update(owner=owner, cases=cases, promo=promo, bm=bm, jeq=jeq)
+    return out
+
+
+def build_all(text, depth: int = DEPTH) -> tuple:
+    c = ChessCirc(text=text)
+    s1 = build_stage1(c)
+    s2 = build_stage2(c, s1)
+    s3 = build_stage3(c, s1, s2)
+    s4 = build_stage4(c, s1, s2, s3)
+    s5 = build_stage5(c, s1, s2, s3, s4)
+    br = build_bridge_read(c)
+    s6 = build_stage6(c, s1, s2, s3, s4, s5, br, depth)
+    return c, (s1, s2, s3, s4, s5, br, s6)

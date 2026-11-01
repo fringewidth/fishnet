@@ -1,49 +1,58 @@
 # fishnet: a chess search machine compiled into transformer layers
 
-The spec is `ref.py` (token-level reference, checked against a recursive alpha-beta and against
-python-chess move generation). The circuit must emit exactly `ref.Machine`'s token stream.
+The spec is `ref.py` (token-level search, checked against recursive alpha-beta and python-chess
+move generation) and `ref2.py` (the same search with the state layout transformer layers can
+hold; same move, score and node count as `ref.py`). The circuit (`circuit/build.py`) predicts
+exactly `ref2.Machine2`'s token stream: `circuit/test_circuit.py 2 5` checks every next-token
+prediction with the repo's exact IR evaluator in fp32.
+
+## The one rule that shapes the design
+
+A Gated DeltaNet head's write may only use values computed below its own layer in the same
+pass. So no table can be rewritten from its own contents in one pass; such state is carried by
+tokens (the CPU in the Qwenputer repo does the same for its registers and PC).
 
 ## Arithmetic
 
-fp32, not bf16. Every value the circuit materializes is an integer below 2^24, so fp32 holds it
-exactly, and the repo's exact-relu rule carries over unchanged: silu(128 x) == 128 relu(x) for
-integer x (x >= 1 gives >= 18, x <= -1 gives <= -104). That makes scores, alpha-beta, max/min
-and the PeSTO sums plain linear forms plus single relu units, where bf16 would need nibble
-logic everywhere. State rows still hold 0/1 bits next to the ballast (the per-head RMSNorm only
-absorbs small data next to it), so integers are written as bits and read back linearly.
+fp32. Every value is an integer below 2^24, and silu(128 x) == 128 relu(x) holds for integer x
+in fp32 as in bf16, so threshold units are exact: `[z >= theta] = relu(z - theta + 1) -
+relu(z - theta)`, with 0/1 literals folded in at weight 2^20. State rows hold 0/1 bits next to
+a ballast; summed reads (every row ballasted, a power-of-2 row count) return column sums.
 
-## State (Gated DeltaNet tables, keyed by ply unless noted)
+## Tokens (vocab 160,499)
 
-| table  | rows        | contents                                                   | bits |
-|--------|-------------|------------------------------------------------------------|------|
-| board  | ply 0..31   | 64 squares x 12 piece one-hot, castling 4, ep square 6 + valid | 779  |
-| ctrl   | ply         | alpha, beta, best (16-bit, offset), depth (5), legal (1)   | ~54  |
-| cursor | ply         | last move tried (from 6, to 6, valid 1)                    | 13   |
-| ply    | one row     | current ply (5 bits)                                       | 5    |
-| rootbm | one row     | root's best move so far                                    | 12   |
+START(depth, root colour, castling, ep file); MOVE / MOVE_IMP(from, to, moved kind, captured
+kind [6 = en passant], mover colour) over geometrically possible moves; RET(score) and
+RET_ILLEGAL; PLY / PLY_IMP(ply) anchors; DONE. About 2.04 tokens per searched node.
 
-Each value head row holds 126 data bits, so the board row spans 7 value heads (4 key heads that
-all key on the same ply).
+## State tables
 
-## One pass (one token)
+| table | layout | written by |
+|---|---|---|
+| anchor, counters | ply = anchor + MOVEs - RETs since the anchor (decay 1/2 counters) | anchor tokens; every MOVE / RET |
+| diff | per ply: a move's add / remove code bits per square + rights lost; board = sum of rows | MOVE (from the token alone); cleared by RET |
+| ep, cursor | per ply, single-row reads | MOVE (from the token) |
+| root | depth, root colour, castling | START |
+| ext | per ply check-extension flag, summed: depth = D - ply + sum | fresh passes (high layer); cleared by RET |
+| stand | per-ply 16-bit stand pat in its own column block (one read gives every ancestor's) | fresh quiescence passes (high layer) |
+| best (x2, by parity) | per-ply 16-bit best child score, column blocks | reset when a node is created; an improvement is written by the token after the RET (MOVE_IMP / PLY_IMP), from the RET's payload through a lag head |
 
-The input token is START(depth), MOVE(f, t), RET(s), RET_ILLEGAL or DONE.
+Scores are stored as score + 32768; the all-zero row (-32768) is -INF.
 
-1. Read the ply, then the rows of the focus node: the parent (MOVE: ply; RET: ply - 1).
-2. MOVE: build the child board in the residual (move the piece, captures, en passant, castling
-   rook, queen promotion, rights, new ep; mirror sq ^ 56 and swap colours, a pure rewiring) and
-   its ctrl (alpha = -beta_p, beta = -alpha_p, depth - 1). RET: v = -s; best = max(best, v);
-   alpha = max(alpha, v); legal += 1; cutoff = v >= beta. Mux into one "node" board + ctrl.
-3. Node logic on the node board, all squares in parallel:
-   - attack maps (path-clear ANDs over every ray), king capture (illegal), in check, castling;
-   - eval (MOVE into a depth <= 0 child): mg, eg and phase are linear in the one-hot board;
-     mg * ph by phase one-hot; floor(/24) by thresholds; stand pat, cutoff;
-   - next move after the cursor: captures by (victim value desc, victim sq, attacker value
-     asc, attacker sq), then quiets by (from, to); two-level selection (victim, then attacker;
-     from, then to) with a priority encoder each.
-4. Write the rows that changed (child board / ctrl / parent cursor on MOVE; parent ctrl on RET;
-   ply; root best move) and emit the next token's output code.
+## One pass
 
-## Tokens per node
+1. Ply (counters), then the tables. 2. The board: diff sum -> absolute one-hot -> the side to
+move's view (Black mirrored). 3. Attack maps (path-clear AND units over every ray), legality
+(king capture), in check, castling, en passant. 4. PeSTO eval (linear in the one-hot board;
+mg * phase via a phase one-hot; floor(/24) in two threshold stages), depth, stand pat, the
+alpha-beta window (masked max trees over ancestors). 5. Move selection after the cursor: (a)
+same victim, next attacker; (b) next victim, first attacker; (c) same from-square, next quiet
+target; (d) next from-square with a quiet move, first target; 384-slot priority encoders over
+(victim value desc, square) and (attacker value asc, square). 6. Cases (illegal, ply cap, stand
+pat cut, beta cut, move, no move / mate / stalemate, root DONE, anchors) -> the next token.
 
-Exactly 2 (one MOVE in, one RET out), measured on the reference.
+## Status
+
+Stages 1-5 exact against the spec (22 layers before depth optimisation, ~40k MLP units, 24
+heads). Next: the bridge to Qwen (FEN read from text via width counters into summed root rows;
+START; printing bestmove), the output code, emit / merge into Qwen3.5-4B, a GPU run.

@@ -25,6 +25,7 @@ class ChessCirc(Circ):
     def __init__(self, target: Target | None = None) -> None:
         super().__init__(target or T4B)
         self.tables = {}  # name -> head node, for initial-state snapshots
+        self.multi = {}  # name -> slots of tables read as a sum over rows (every row needs its ballast)
         self._features()
 
     # ------------------------------------------------------------------ token features
@@ -142,6 +143,7 @@ class ChessCirc(Circ):
                         {col: 128 * self.one for col in cols}, [(col, 2.0**7 * n) for col in cols],
                         beta=beta)
         self.tables[name] = self.nodes[-1]
+        self.multi[name] = list(slots)
         return out
 
 
@@ -333,4 +335,151 @@ def build_stage2(c: ChessCirc, s1: dict) -> dict:
     out.update(root_depth=root_depth, root_white=root_white, ep_read=ep_read, stm_white=stm_white,
                rel=rel, empty=empty, us_any=us_any, them_any=them_any, rel_right=rel_right,
                atk_us=atk_us, atk_them=atk_them, illegal=illegal, in_check=in_check)
+    return out
+
+
+# ====================================================================== stage 3
+
+OFF = 32768  # scores are stored as x = score + OFF in 16 bits; x = 0 (score -32768) is -INF
+DIV_M = 16384  # floor division offset: e24 + 24 * DIV_M >= 0
+
+
+def int_bits16(c: ChessCirc, x, name: str) -> list:
+    """The 16 bits of an integer x in [0, 65536), in two threshold stages (hi byte, then bits)."""
+    one = c.one
+    hi = c.node([t for j in range(1, 256) for t in c.ge_terms(x, 256 * j)], f"{name}.hi")
+    lo = x - 256 * hi
+
+    def byte_bits(z, tag):
+        out = []
+        for i in range(8):
+            terms = []
+            for theta in range(1, 256):
+                d = (theta >> i & 1) - ((theta - 1) >> i & 1)
+                if d:
+                    terms += c.ge_terms(z, theta, coef=d)
+            out.append(c.node(terms, f"{name}.{tag}{i}"))
+        return out
+
+    return byte_bits(lo, "b") + byte_bits(hi, "b8+")
+
+
+def score_table(c: ChessCirc, name: str, rows: list, keys: dict, row_bits: dict, lag=False) -> dict:
+    """Per-row 16-bit values in per-row column blocks, read all at once: returns {row: value
+    (score + OFF as a linear form)}. row_bits: row -> 16 forms (0/1), the bits that row's write
+    stores (0 on tokens that do not write it)."""
+    cols = [(r, i) for r in rows for i in range(16)]
+    vals = {r: Expr() for r in rows}
+    per = len(DATA_COLS)
+    for h in range(0, len(cols), per):
+        chunk = cols[h:h + per]
+        data = {DATA_COLS[j]: row_bits[r][i] for j, (r, i) in enumerate(chunk)}
+        res = c.multi_read(f"{name}{h // per}", rows, keys, data, c.one)
+        for (r, i), d in zip(chunk, res):
+            vals[r] = vals[r] + d * (1 << i)
+    return vals
+
+
+def build_stage3(c: ChessCirc, s1: dict, s2: dict) -> dict:
+    import pesto
+    one, is_ = c.one, c.is_
+    P, p_oh = s1["P"], s1["p_oh"]
+    rel = s2["rel"]
+    fresh = is_["START"] + c.isMOVE
+    out = {}
+
+    # ---------------------------------------------------------------- evaluation (PeSTO, tapered)
+    mg = Expr()
+    eg = Expr()
+    ph = Expr()
+    for s in range(64):
+        for k in range(6):
+            mg = mg + rel[s][k] * pesto.MG[k][s] - rel[s][k + 6] * pesto.MG[k][s ^ 56]
+            eg = eg + rel[s][k] * pesto.EG[k][s] - rel[s][k + 6] * pesto.EG[k][s ^ 56]
+            w = (0, 1, 1, 2, 4, 0)[k]
+            if w:
+                ph = ph + (rel[s][k] + rel[s][k + 6]) * w
+    ph_oh = [c.node(c.eq_terms(ph, k), f"ph=={k}") for k in range(24)] + \
+            [c.node(c.ge_terms(ph, 24), "ph>=24")]
+    e24 = c.node([(1, mg * k + eg * (24 - k), ph_oh[k]) for k in range(25)], "e24")
+    x = e24 + 24 * DIV_M  # >= 0
+    q1 = c.node([t for j in range(1, 512) for t in c.ge_terms(x, 1536 * j)], "div.q1")
+    r1 = x - 1536 * q1
+    q2 = c.node([t for j in range(1, 64) for t in c.ge_terms(r1, 24 * j)], "div.q2")
+    evalv = q1 * 64 + q2 - DIV_M
+    out.update(mg=mg, eg=eg, ph=ph, eval=evalv)
+
+    # ---------------------------------------------------------------- depth: check extensions
+    plycap = p_oh[MAX_PLY - 1]
+    ext_flag = c.node(c.t_and([s2["in_check"], one - s2["illegal"], one - plycap, fresh]), "ext.flag")
+    k_fresh = {r: c.node(c.t_and([fresh, p_oh[r]]), f"kfresh[{r}]") for r in range(MAX_PLY)}
+    k_ext = {r: c.node(c.t_and([fresh, p_oh[r]]) + (c.t_and([c.isRET, p_oh[r - 1]]) if r else []),
+                       f"kext[{r}]") for r in range(MAX_PLY)}
+    (ext_sum,) = c.multi_read("ext", list(range(MAX_PLY)), k_ext, {2: ext_flag}, one)
+    depth = s2["root_depth"] - P + ext_sum
+    out.update(depth=depth, ext_flag=ext_flag)
+
+    # ---------------------------------------------------------------- stand pat (fresh quiescence nodes)
+    qnode = c.node(c.ge_terms(-depth, 0, lits=[one - s2["illegal"], one - plycap, fresh]), "qnode")
+    xs = c.node([(1, evalv + OFF, qnode)], "stand.x")  # 0 (= -INF) unless a quiescence node
+    xs_bits = int_bits16(c, xs, "stand")
+    st_bits = {r: [c.node(c.t_and([xs_bits[i], p_oh[r], fresh]), f"stand[{r}].b{i}") for i in range(16)]
+               for r in range(MAX_PLY)}
+    stand = score_table(c, "stand", list(range(MAX_PLY)), k_fresh, st_bits)
+    out.update(qnode=qnode, stand_x=xs)
+
+    # ---------------------------------------------------------------- best (by parity), lag head for v
+    def ret_vbit(i):
+        def fn(t):
+            d = V.decode(t)
+            return ((-d[1] + OFF) >> i & 1) if d[0] == "RET" else 0
+        return fn
+
+    vbits = [c.feat(f"ret.v.b{i}", ret_vbit(i)) for i in range(16)]
+    from chipformer.q35.ir import Chan
+    (prev_v,) = thead(c, "prev.v", {0: one}, {0: one},
+                      [{"data": {2 + i: Chan(vbits[i], (0.0, 1.0, 0.0, 0.0)) for i in range(16)}, "ref": one}])
+    c.tables["prev.v"] = c.nodes[-1]
+    imp_move, imp_ply = is_["MOVE_IMP"], is_["PLY_IMP"]
+    best = {}
+    for par in (0, 1):
+        rows = list(range(par, MAX_PLY, 2))
+        keys, bits = {}, {}
+        for r in rows:
+            nxt = p_oh[r + 1] if r + 1 < MAX_PLY else Expr()
+            imp_row = c.t_and([imp_move, nxt]) + c.t_and([imp_ply, p_oh[r]])
+            keys[r] = c.node(c.t_and([fresh, p_oh[r]]) + imp_row, f"kbest[{r}]")
+            bits[r] = [c.node((c.t_and([prev_v[i], imp_move, nxt]) if r + 1 < MAX_PLY else [])
+                              + c.t_and([prev_v[i], imp_ply, p_oh[r]]), f"best[{r}].b{i}") for i in range(16)]
+        best.update(score_table(c, f"best{par}.", rows, keys, bits))
+
+    # ---------------------------------------------------------------- the window from the ancestors
+    # (offset values: 0 = -INF). alpha: same parity as P, rows <= P; beta: other parity, rows < P.
+    def incl(r, same):
+        return sum((p_oh[p] for p in range(r, MAX_PLY) if (p - r) % 2 == (0 if same else 1)), Expr())
+
+    def masked(r, same, tag):
+        b_, s_ = best[r], stand[r]
+        return c.node([(1, incl(r, same), b_), (1, incl(r, same), s_ - b_)], f"{tag}.m[{r}]")
+
+    def max_tree(vals, tag):
+        lvl = 0
+        while len(vals) > 1:
+            nxt = []
+            for i in range(0, len(vals), 2):
+                if i + 1 < len(vals):
+                    a, b = vals[i], vals[i + 1]
+                    nxt.append(c.node([(1, one, a), (1, one, b - a)], f"{tag}.max{lvl}.{i // 2}"))
+                else:
+                    nxt.append(vals[i])
+            vals, lvl = nxt, lvl + 1
+        return vals[0]
+
+    am = [masked(r, True, "alpha") for r in range(MAX_PLY)]
+    bm = [masked(r, False, "beta") for r in range(MAX_PLY)]
+    alpha_x = max_tree(am[0::2], "alpha.e") + max_tree(am[1::2], "alpha.o")
+    beta_x = max_tree(bm[0::2], "beta.e") + max_tree(bm[1::2], "beta.o")
+    alpha = alpha_x - OFF
+    beta = OFF - beta_x  # -(max - OFF)
+    out.update(best=best, stand=stand, alpha=alpha, beta=beta)
     return out

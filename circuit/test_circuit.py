@@ -15,16 +15,17 @@ from chipformer.q35.ir import A_BIT, A_REF, REF_COLS  # noqa: E402
 
 
 def initial_carry(c, root_abs: dict) -> dict:
-    """Initial head states: every DIFF row holds its ballast; row 0 holds the root board."""
+    """Initial head states: every row of a summed table holds its ballast; DIFF row 0 holds the
+    root board."""
     carry = {}
     for ni, node in enumerate(c.nodes):
-        if not node.name.startswith("diff"):
+        if node.name not in c.multi:
             continue
         rows = {}
-        for r in range(ref.MAX_PLY):
+        for r in c.multi[node.name]:
             row = np.zeros(node.n_cols)
             row[list(REF_COLS)] = A_REF
-            if r == 0:
+            if r == 0 and node.name.startswith("diff"):
                 for col, ch in node.v.items():
                     if col in REF_COLS:
                         continue
@@ -127,6 +128,53 @@ def check_stage2(fen: str, depth: int, sample: int = 37) -> int:
     return bad
 
 
+def check_stage3(fen: str, depth: int, sample: int = 1) -> int:
+    pos, white = ref.from_fen(fen)
+    m = ref2.Machine2(pos, white, depth)
+    seen = []
+
+    def hook(mm, tok):
+        p = mm.ply()
+        a, b = mm.window(p)
+        seen.append((p, mm.board_at(p), mm.depth_at(p), mm.stand.get(p, -ref.INF), a, b))
+
+    m.run(hook=hook)
+    c = B.ChessCirc()
+    s1 = B.build_stage1(c)
+    s2 = B.build_stage2(c, s1)
+    s3 = B.build_stage3(c, s1, s2)
+    toks = [V.encode(t) for t in m.tokens[:-1]]
+    t0 = time.time()
+    mat = ir.evaluate(c, toks, check=True, carry=initial_carry(c, ref2.abs_board(pos, white)))
+    dt = time.time() - t0
+    ev = lambda e: ir.ev(e, mat)  # noqa: E731
+    E, D, ST, AL, BE = ev(s3["eval"]), ev(s3["depth"]), ev(s3["stand_x"]), ev(s3["alpha"]), ev(s3["beta"])
+
+    def inf(v):  # the circuit's -INF is -32768, the spec's -32000
+        return -ref.INF if v <= -ref.INF else (ref.INF if v >= ref.INF else v)
+
+    bad = 0
+    for i, (p, pos_i, d, st, a, b) in enumerate(seen):
+        errs = []
+        if E[i] != ref.evaluate(pos_i):
+            errs.append(f"eval {E[i]} want {ref.evaluate(pos_i)}")
+        if D[i] != d:
+            errs.append(f"depth {D[i]} want {d}")
+        tok = m.tokens[i][0]
+        if tok in ("START", "MOVE", "MOVE_IMP"):
+            got_st = ST[i] - B.OFF if ST[i] else -ref.INF
+            if got_st != st:
+                errs.append(f"stand {got_st} want {st}")
+        if inf(AL[i]) != a or inf(BE[i]) != b:
+            errs.append(f"window ({AL[i]}, {BE[i]}) want ({a}, {b})")
+        if errs:
+            bad += 1
+            if bad <= 4:
+                print(f"  token {i} {m.tokens[i]} P={p}: {errs}")
+    print(f"stage3 {fen[:40]}.. d{depth}: {len(seen)} tokens, mismatches {bad}, circuit {c.stats()}, eval {dt:.0f}s")
+    return bad
+
+
 if __name__ == "__main__":
     fens = ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
@@ -134,6 +182,6 @@ if __name__ == "__main__":
             "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"]
     depth = int(sys.argv[1]) if len(sys.argv) > 1 else 2
     stage = sys.argv[2] if len(sys.argv) > 2 else "1"
-    check = {"1": check_stage1, "2": check_stage2}[stage]
+    check = {"1": check_stage1, "2": check_stage2, "3": check_stage3}[stage]
     total = sum(check(f, depth) for f in fens)
     print("TOTAL mismatches", total)

@@ -1,8 +1,8 @@
 """Play one move on a Mac: Qwen3.5-4B as shipped (MPS, bf16) plus the chess circuit's layers on
 the CPU (sparse_exec, fp32, exact).
 
-    python play_mac.py --fen FEN
-    python play_mac.py --serve 8765      (POST {"fen": ...}, the same API as play.py)
+    uv run python circuit/play_mac.py --fen FEN
+    uv run python circuit/play_mac.py --serve 8765      (POST {"fen": ...}, the same API as play.py)
 
 This computes what the merged checkpoint computes (merge.py: the chip layers first, then Qwen's
 layers zero-padded), without materializing its zero blocks:

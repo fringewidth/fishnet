@@ -1,6 +1,6 @@
 """Render the replay to an MP4: every frame is replay.html drawn at time t, screenshotted.
 
-    python render.py timeline.json out.mp4 [--fps 30] [--until SECONDS]
+    uv run --group video python video/render.py timeline.json out.mp4 [--fps 30] [--until SECONDS]
 """
 import argparse
 import json

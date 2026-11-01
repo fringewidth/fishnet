@@ -1,7 +1,7 @@
 """Merge the chess machine into Qwen3.5-4B: one stock ``Qwen3_5ForCausalLM`` checkpoint.
 
-    python merge.py SRC --out DST [--depth 4] [--no-mute]
-    python merge.py --chip-only [--depth 4]   (emit and check the chip layers, write nothing)
+    uv run python circuit/merge.py SRC --out DST [--depth 4] [--no-mute]
+    uv run python circuit/merge.py --chip-only [--depth 4]   (emit and check the chip layers, write nothing)
 
 Layout (the repo's "v2", as rv/merge.py):
 

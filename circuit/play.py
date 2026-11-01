@@ -1,8 +1,8 @@
 """Play one move with the merged checkpoint: Qwen reads the position, calls its chess engine,
 the engine runs inside the same weights, and the move comes back as Qwen's own tokens.
 
-    python play.py MODEL --fen FEN [--verify 3000] [--check-head]
-    python play.py MODEL --serve 8765          (POST {"fen": ...} -> {"move": ..., ...})
+    uv run python circuit/play.py MODEL --fen FEN [--verify 3000] [--check-head]
+    uv run python circuit/play.py MODEL --serve 8765          (POST {"fen": ...} -> {"move": ..., ...})
 
 Decoding is greedy and transparent to chess tokens, as the repo's rv/chat.py: a text token runs
 through every layer; a chess token (PUT, START, MOVE, RET, ...) runs through the chip layers only

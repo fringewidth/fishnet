@@ -1,6 +1,6 @@
 """Replay timeline for the video, from a game's records.
 
-    python build_timeline.py TAG [--pace tweet|full] > timeline.json
+    uv run python video/build_timeline.py TAG [--pace tweet|full] > timeline.json
 
 Reads harness/records/TAG.jsonl (one line per ply) and harness/logs/TAG/ply###-fishnet.json.gz
 (Qwen's whole token stream per move). Each ply becomes a segment of video time; `pace` decides how

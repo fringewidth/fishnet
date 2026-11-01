@@ -1,18 +1,13 @@
-# build outputs
-out/
-chess_native
 __pycache__/
 *.pyc
-# third-party sources fetched for cross-checking (PeSTO tables from other repos)
-ext/
-# per-move LLM transcripts and run logs
+.venv
+# Qwenputer's IR, fetched by setup.sh
+vendor
+# match outputs (finished games worth keeping go in results/)
+harness/games/
+harness/records/
 harness/logs/
 harness/runs/
-# Qwenputer's IR, fetched by setup.sh
-vendor/
-.venv/
 # video renders
 video/*.json
 video/*.mp4
-legacy/rv32/out/
-legacy/rv32/chess_native

@@ -37,7 +37,7 @@ echo "== 3/4 Qwen3.5-4B (Hugging Face, about 9 GB; skipped if cached)"
 uv run python -c "from huggingface_hub import snapshot_download; print(snapshot_download('Qwen/Qwen3.5-4B'))"
 
 echo "== 4/4 self-test: the chess layers against the reference search, token by token"
-uv run python circuit/selftest.py
+uv run python tests/selftest.py
 
 echo
 echo "Done. Start a game with: ./play.sh"

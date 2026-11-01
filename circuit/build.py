@@ -1,7 +1,7 @@
 """The chess search machine as a circuit in the repo's q35 IR (fp32 exact).
 
 Built in stages; each stage's dims are checked against the spec (machine/ref2.py) token by token
-by test_circuit.py.
+by tests/test_circuit.py.
 
 Stage 1: token features, the ply pointer (anchor + decay counters), the diff-stack board table
 and the decoded board (absolute coordinates, one-hot per square).
@@ -253,7 +253,7 @@ def _diff(f, t, pk, xk, white):
 
 
 def build_stage1(c: ChessCirc) -> dict:
-    one, is_ = c.one, c.is_
+    one = c.one
     out = {}
 
     # ---------------------------------------------------------------- ply pointer

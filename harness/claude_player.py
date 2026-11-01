@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -31,8 +32,7 @@ class ClaudePlayer:
         if os.path.exists(out):
             os.remove(out)
         json.dump({"mcpServers": {"chess": {
-            "command": "uv", "args": ["run", "-q", "--no-project", "--with", "mcp<2", "--with", "chess", "python",
-                                      os.path.join(HERE, "board_mcp.py")],
+            "command": sys.executable, "args": [os.path.join(HERE, "board_mcp.py")],
             "env": {"CHESS_STATE": state, "CHESS_OUT": out}}}}, open(self.cfg, "w"))
         color = "White" if board.turn else "Black"
         from board_mcp import describe
@@ -41,9 +41,7 @@ class ClaudePlayer:
                "--system-prompt", SYSTEM.format(color=color), "--tools", "",
                "--strict-mcp-config", "--mcp-config", self.cfg,
                "--allowedTools", "mcp__chess__get_board,mcp__chess__legal_moves,mcp__chess__submit_move",
-               "--no-session-persistence", "--output-format", "json"]
-        cmd[cmd.index("json")] = "stream-json"
-        cmd.append("--verbose")
+               "--no-session-persistence", "--output-format", "stream-json", "--verbose"]
         for attempt in range(3):
             t0 = time.time()
             events, raw = [], []

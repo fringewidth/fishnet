@@ -204,7 +204,6 @@ def _step(x, dx, kind, lv_a, lv_b, in_ptr, in_dim, col_ptr, col_u, col_w, ub, u_
           hist, S, qkbuf, D):
     HDn = S.shape[1]
     ovec = np.zeros(HDn, np.float32)
-    vvec = np.zeros(HDn, np.float32)
     for L in range(kind.shape[0]):
         if kind[L] == 0:
             u0, u1 = lv_a[L], lv_b[L]

@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Qwen vs Opus replay</title>
+<style>
+  :root {
+    --bg: #0d0f12; --panel: #15181d; --line: #262b33; --text: #e6e8eb; --dim: #8a929e;
+    --qwen: #7c6cff; --opus: #d97757; --light: #e9dcc4; --dark: #a9825a; --hl: rgba(255, 214, 102, .55);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--text);
+         font-family: "SF Pro Display", "Helvetica Neue", Arial, sans-serif; }
+  .mono { font-family: "SF Mono", "Menlo", monospace; }
+  #stage { position: absolute; inset: 0; display: grid; grid-template-columns: 560px 800px 560px;
+           grid-template-rows: 110px 800px 170px; }
+  header { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; padding: 0 48px;
+           border-bottom: 1px solid var(--line); }
+  .who { display: flex; flex-direction: column; gap: 6px; }
+  .who .name { font-size: 34px; font-weight: 700; }
+  .who .sub { font-size: 19px; color: var(--dim); }
+  .who.qwen .name { color: var(--qwen); } .who.opus .name { color: var(--opus); text-align: right; }
+  .who.opus .sub { text-align: right; }
+  .vs { font-size: 26px; color: var(--dim); letter-spacing: 4px; }
+  .panel { background: var(--panel); margin: 24px; border-radius: 14px; border: 1px solid var(--line);
+           padding: 22px; overflow: hidden; position: relative; }
+  .panel.active.qwen { border-color: var(--qwen); box-shadow: 0 0 0 1px var(--qwen); }
+  .panel.active.opus { border-color: var(--opus); box-shadow: 0 0 0 1px var(--opus); }
+  .ptitle { font-size: 17px; color: var(--dim); text-transform: uppercase; letter-spacing: 2px; margin-bottom: 14px; }
+  .call { font-size: 17px; white-space: pre-wrap; color: #c9cdd4; line-height: 1.45; min-height: 150px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 16px 0; }
+  .stat { background: #0f1216; border-radius: 10px; padding: 12px 14px; }
+  .stat .v { font-size: 34px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 14px; color: var(--dim); margin-top: 2px; }
+  .stream { font-size: 17px; line-height: 1.5; color: #9aa3b0; height: 300px; overflow: hidden;
+            mask-image: linear-gradient(to bottom, transparent, black 30%); }
+  .stream div:last-child { color: var(--text); }
+  .answer { font-size: 22px; margin-top: 12px; }
+  .answer b { color: var(--qwen); font-size: 30px; }
+  .opusev { font-size: 19px; line-height: 1.5; margin-bottom: 14px; white-space: pre-wrap; }
+  .opusev.tool { color: var(--opus); font-family: "SF Mono", Menlo, monospace; font-size: 17px; }
+  .clock { position: absolute; bottom: 18px; right: 22px; font-size: 15px; color: var(--dim); }
+  #boardwrap { display: flex; align-items: center; justify-content: center; }
+  #board { width: 720px; height: 720px; display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+           border-radius: 6px; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
+  .sq { display: flex; align-items: center; justify-content: center; font-size: 72px; line-height: 1;
+        font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols2", serif; position: relative; }
+  .sq.l { background: var(--light); } .sq.d { background: var(--dark); }
+  .sq.hl::after { content: ""; position: absolute; inset: 0; background: var(--hl); }
+  .pc { position: relative; z-index: 1; }
+  .pc.w { color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 2px 4px rgba(0,0,0,.6); }
+  .pc.b { color: #111; text-shadow: 0 0 1px #fff, 0 1px 2px rgba(255,255,255,.25); }
+  footer { grid-column: 1 / 4; border-top: 1px solid var(--line); padding: 20px 48px; display: flex;
+           gap: 40px; align-items: center; }
+  #moves { font-size: 22px; color: var(--dim); white-space: nowrap; overflow: hidden; flex: 1;
+           direction: rtl; text-align: left; }
+  #moves span { direction: ltr; unicode-bidi: isolate; }
+  #moves .last { color: var(--text); font-weight: 700; }
+  #gameclock { font-size: 18px; color: var(--dim); white-space: nowrap; }
+  .card { position: absolute; inset: 0; background: rgba(13,15,18,.94); display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 26px; text-align: center; z-index: 10; }
+  .card h1 { font-size: 64px; }
+  .card h1 .q { color: var(--qwen); } .card h1 .o { color: var(--opus); }
+  .card p { font-size: 28px; color: #c3c8cf; max-width: 1300px; line-height: 1.45; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <header>
+    <div class="who qwen"><div class="name">Qwen3.5-4B</div>
+      <div class="sub">its chess engine is compiled into its weights</div></div>
+    <div class="vs">VS</div>
+    <div class="who opus"><div class="name">Claude Opus 5.5</div>
+      <div class="sub">high effort &middot; board tools only</div></div>
+  </header>
+  <div class="panel qwen" id="qp">
+    <div class="ptitle">Qwen &middot; its own forward passes</div>
+    <div class="call mono" id="qcall"></div>
+    <div class="stats">
+      <div class="stat"><div class="v" id="qtok">0</div><div class="k">search tokens (forward passes)</div></div>
+      <div class="stat"><div class="v" id="qnodes">0</div><div class="k">positions searched</div></div>
+    </div>
+    <div class="stream mono" id="qstream"></div>
+    <div class="answer" id="qans"></div>
+    <div class="clock mono" id="qclock"></div>
+  </div>
+  <div id="boardwrap"><div id="board"></div></div>
+  <div class="panel opus" id="op">
+    <div class="ptitle">Opus &middot; reasoning and tool calls</div>
+    <div id="oev"></div>
+    <div class="clock mono" id="oclock"></div>
+  </div>
+  <footer><div id="moves"></div><div id="gameclock" class="mono"></div></footer>
+</div>
+<div class="card" id="intro">
+  <h1><span class="q">Qwen3.5-4B</span> vs <span class="o">Claude Opus 5.5</span></h1>
+  <p>Qwen calls a chess engine that lives inside its own weights: an alpha-beta search compiled into
+     transformer layers. Every search step is one forward pass. No external code, no Stockfish.</p>
+</div>
+<div class="card" id="outro" style="display:none"><h1 id="otitle"></h1><p id="otext"></p></div>
+<script>
+const GLYPH = {k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟"};
+let TL = null;
+const $ = (id) => document.getElementById(id);
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+const fmt = (n) => Math.round(n).toLocaleString("en-US");
+
+function boardFrom(fen) {
+  const rows = fen.split(" ")[0].split("/");
+  const out = [];
+  for (const r of rows) { const row = []; for (const ch of r) { if (/\d/.test(ch)) for (let i = 0; i < +ch; i++) row.push(null); else row.push(ch); } out.push(row); }
+  return out;  // out[0] is rank 8
+}
+function drawBoard(fen, uci) {
+  const b = boardFrom(fen);
+  const hl = new Set();
+  if (uci) { hl.add(uci.slice(0, 2)); hl.add(uci.slice(2, 4)); }
+  let html = "";
+  for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+    const name = "abcdefgh"[f] + (8 - r);
+    const p = b[r][f];
+    const cls = ((r + f) % 2 ? "d" : "l") + (hl.has(name) ? " hl" : "");
+    const pc = p ? `<span class="pc ${p === p.toUpperCase() ? "w" : "b"}">${GLYPH[p.toLowerCase()]}</span>` : "";
+    html += `<div class="sq ${cls}">${pc}</div>`;
+  }
+  $("board").innerHTML = html;
+}
+function esc(s) { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+
+function load(tl) { TL = tl; }
+
+function render(t) {
+  const P = TL.plies;
+  $("intro").style.display = t < P[0].t0 ? "flex" : "none";
+  // the ply on screen
+  let i = P.findIndex((p) => t < p.t0 + p.dur);
+  const after = i < 0;
+  if (after) i = P.length - 1;
+  const p = P[Math.max(i, 0)];
+  const u = after ? 1 : clamp((t - p.t0) / p.dur, 0, 1);
+  const moved = u > 0.86;
+  drawBoard(moved ? p.fen_after : p.fen_before, moved ? p.uci : (i > 0 ? P[i - 1].uci : null));
+  // move list
+  const done = P.slice(0, moved ? i + 1 : i);
+  let ml = "";
+  done.forEach((q, k) => {
+    const num = q.ply % 2 === 1 ? `${(q.ply + 1) / 2}. ` : "";
+    ml += `<span class="${k === done.length - 1 ? "last" : ""}">${num}${q.san}</span> `;
+  });
+  $("moves").innerHTML = ml;
+  const real = P.slice(0, i).reduce((s, q) => s + q.real_seconds, 0) + p.real_seconds * u;
+  $("gameclock").textContent = `game time ${Math.floor(real / 60)}:${String(Math.floor(real % 60)).padStart(2, "0")}`;
+  // Qwen's panel: its latest move (live while it is Qwen's turn)
+  const qi = p.side === "qwen" ? i : (() => { for (let k = i; k >= 0; k--) if (P[k].side === "qwen") return k; return -1; })();
+  $("qp").classList.toggle("active", p.side === "qwen" && !after);
+  if (qi >= 0) {
+    const q = P[qi];
+    const v = qi === i ? u : 1;
+    const callLen = Math.floor(q.call.length * clamp(v / 0.22, 0, 1));
+    $("qcall").textContent = q.call.slice(0, callLen);
+    const s = clamp((v - 0.22) / 0.6, 0, 1);
+    $("qtok").textContent = fmt(q.chip_tokens * s);
+    $("qnodes").textContent = fmt(q.nodes * s);
+    const k = Math.floor(q.stream.length * s);
+    $("qstream").innerHTML = q.stream.slice(Math.max(0, k - 13), k).map((x) => `<div>${esc(x)}</div>`).join("");
+    $("qans").innerHTML = v > 0.84 ? `<span style="color:var(--dim)">&lt;tool_response&gt;</span> <b>${q.move}</b>` : "";
+    $("qclock").textContent = `${(q.seconds * clamp(v / 0.84, 0, 1)).toFixed(1)}s on a laptop`;
+  }
+  // Opus's panel
+  const oi = p.side === "opus" ? i : (() => { for (let k = i; k >= 0; k--) if (P[k].side === "opus") return k; return -1; })();
+  $("op").classList.toggle("active", p.side === "opus" && !after);
+  if (oi >= 0) {
+    const o = P[oi];
+    const v = oi === i ? u : 1;
+    const evs = o.events.length ? o.events : [{kind: "text", text: "…"}];
+    const total = evs.reduce((s, e) => s + e.text.length, 0);
+    let budget = total * clamp(v / 0.85, 0, 1);
+    let html = "";
+    for (const e of evs) {
+      if (budget <= 0) break;
+      const txt = e.text.slice(0, Math.floor(budget));
+      budget -= e.text.length;
+      html += `<div class="opusev ${e.kind === "tool" ? "tool" : ""}">${esc(txt)}</div>`;
+    }
+    $("oev").innerHTML = html;
+    $("oclock").textContent = `${(o.real_seconds * clamp(v / 0.85, 0, 1)).toFixed(0)}s thinking`;
+  }
+  // result card
+  const end = P[P.length - 1].t0 + P[P.length - 1].dur;
+  $("outro").style.display = t > end + 0.6 ? "flex" : "none";
+  if (t > end + 0.6) {
+    const r = TL.result;
+    $("otitle").innerHTML = r === "1-0" ? '<span style="color:var(--qwen)">Qwen3.5-4B wins</span>' :
+      r === "0-1" ? '<span style="color:var(--opus)">Claude Opus 5.5 wins</span>' : (r === "1/2-1/2" ? "Draw" : "Unfinished");
+    $("otext").textContent = `${TL.termination} after ${Math.ceil(P.length / 2)} moves. Every Qwen move was checked against the reference engine and the board it read.`;
+  }
+}
+// interactive viewing: ?timeline=timeline.json plays in real time
+const qs = new URLSearchParams(location.search);
+if (qs.get("timeline")) fetch(qs.get("timeline")).then((r) => r.json()).then((tl) => {
+  load(tl); const t0 = performance.now();
+  const tick = () => { render((performance.now() - t0) / 1000); requestAnimationFrame(tick); }; tick();
+});
+</script>
+</body>
+</html>

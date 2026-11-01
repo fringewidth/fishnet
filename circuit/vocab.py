@@ -124,6 +124,28 @@ def decode(i: int) -> tuple:
     raise ValueError(i)
 
 
+def label(tok: tuple) -> str:
+    """A short readable name of a decoded chip token (for the web page and the video)."""
+    def sq(s):
+        return "abcdefgh"[s % 8] + str(s // 8 + 1)
+    k = tok[0]
+    if k == "PUT":
+        return f"PUT {sq(tok[1])} {' PNBRQKpnbrqk'[tok[2]].strip() or '.'}"
+    if k == "START":
+        return f"START depth {tok[1]}"
+    if k in ("MOVE", "MOVE_IMP"):
+        piece = " PNBRQK"[tok[3]] if tok[5] else " pnbrqk"[tok[3]]
+        cap = "x" if tok[4] else "-"
+        return f"{'MOVE*' if k == 'MOVE_IMP' else 'MOVE'} {piece}{sq(tok[1])}{cap}{sq(tok[2])}"
+    if k == "RET":
+        return f"RET {tok[1]:+d}"
+    if k == "RET_ILLEGAL":
+        return "RET illegal"
+    if k in ("PLY", "PLY_IMP"):
+        return f"{k} {tok[1]}"
+    return k
+
+
 if __name__ == "__main__":
     print("geometric (f,t,pk):", len(GEO), " move tokens:", len(MOVES), " vocab:", VOCAB)
     for t in [("START", 5, 1, 15, 8), ("MOVE", 12, 28, 1, 0, 1), ("MOVE_IMP", 4, 6, 6, 0, 1), ("RET", -31000),

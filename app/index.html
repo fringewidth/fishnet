@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fishnet</title>
+<style>
+  :root { --bg: #0d0f12; --panel: #15181d; --line: #262b33; --text: #e6e8eb; --dim: #8a929e;
+          --accent: #7c6cff; --light: #e9dcc4; --dark: #a9825a; --hl: rgba(255, 214, 102, .5);
+          --sel: rgba(124, 108, 255, .55); --ok: #5fbf77; --bad: #e0675a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif; }
+  .mono { font-family: "SF Mono", Menlo, monospace; }
+  header { padding: 18px 28px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline;
+           gap: 16px; flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 0; color: var(--dim); }
+  main { display: flex; gap: 28px; padding: 24px 28px; flex-wrap: wrap; }
+  #left { flex: 0 0 auto; }
+  #board { width: min(560px, calc(100vw - 32px)); height: min(560px, calc(100vw - 32px)); display: grid;
+           grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr);
+           border-radius: 6px; overflow: hidden; user-select: none; }
+  .sq { display: flex; align-items: center; justify-content: center; position: relative; cursor: pointer;
+        font-size: min(52px, 8.5vw); line-height: 1;
+        font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols2", serif; }
+  .sq.l { background: var(--light); } .sq.d { background: var(--dark); }
+  .sq.last::after, .sq.sel::after { content: ""; position: absolute; inset: 0; }
+  .sq.last::after { background: var(--hl); } .sq.sel::after { background: var(--sel); }
+  .sq.tgt::before { content: ""; position: absolute; width: 26%; height: 26%; border-radius: 50%;
+                    background: rgba(20, 20, 30, .35); z-index: 2; }
+  .pc { position: relative; z-index: 1; }
+  .pc.w { color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000, 0 2px 3px rgba(0,0,0,.6); }
+  .pc.b { color: #111; text-shadow: 0 0 1px #fff; }
+  .controls { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; align-items: center; }
+  button { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+           padding: 8px 14px; font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  label { color: var(--dim); display: flex; gap: 6px; align-items: center; flex: 1 1 220px; min-width: 0; }
+  #status { margin-top: 12px; color: var(--dim); min-height: 22px; }
+  #right { flex: 1 1 420px; min-width: 300px; display: flex; flex-direction: column; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .panel.live { border-color: var(--accent); }
+  .ptitle { color: var(--dim); font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 10px; }
+  #call { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; color: #c9cdd4; min-height: 40px; }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 12px 0; }
+  .stat { background: #0f1216; border-radius: 10px; padding: 10px 12px; }
+  .stat .v { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 12px; color: var(--dim); }
+  #stream { font-size: 13px; color: #9aa3b0; height: 210px; overflow: hidden; }
+  #stream div:last-child { color: var(--text); }
+  .legend { font-size: 12px; color: var(--dim); margin-top: 8px; }
+  #answer { font-size: 18px; margin-top: 8px; min-height: 26px; }
+  #answer b { color: var(--accent); }
+  #moves { color: var(--dim); font-size: 15px; }
+  #moves b { color: var(--text); }
+  @media (max-width: 640px) { header, main { padding-left: 16px; padding-right: 16px; }
+    #left { flex: 1 1 100%; } #right { min-width: 0; } .stat .v { font-size: 19px; } }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>fishnet</h1>
+  <p>Qwen3.5-4B with a chess engine compiled into its weights. Every search step is one forward pass.</p>
+</header>
+<main>
+  <div id="left">
+    <div id="board"></div>
+    <div class="controls">
+      <button onclick="newGame('white')">New game as White</button>
+      <button onclick="newGame('black')">New game as Black</button>
+      <label><input type="checkbox" id="verify"> check each move against the reference engine</label>
+    </div>
+    <div id="status"></div>
+  </div>
+  <div id="right">
+    <div class="panel" id="qp">
+      <div class="ptitle">Qwen's tool call</div>
+      <div id="call" class="mono"></div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="tok">0</div><div class="k">search tokens (forward passes)</div></div>
+        <div class="stat"><div class="v" id="nodes">0</div><div class="k">positions searched</div></div>
+        <div class="stat"><div class="v" id="secs">0.0</div><div class="k">seconds</div></div>
+      </div>
+      <div class="ptitle">The search, as the model writes it</div>
+      <div id="stream" class="mono"></div>
+      <div class="legend">MOVE: a move tried (uppercase White, lowercase Black). MOVE*: the best so far at
+        its node. RET: the score passed back up, in centipawns. PLY: the machine re-anchoring its ply counter.</div>
+      <div id="answer"></div>
+    </div>
+    <div class="panel"><div class="ptitle">Moves</div><div id="moves"></div></div>
+  </div>
+</main>
+<script>
+const GLYPH = {k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟"};
+let S = null, sel = null, thinking = false, t0 = 0, timer = null;
+const $ = (id) => document.getElementById(id);
+const fmt = (n) => Math.round(n).toLocaleString("en-US");
+
+function squares() {  // square names in screen order (from the human's side)
+  const out = [];
+  for (let r = 0; r < 8; r++) for (let f = 0; f < 8; f++) {
+    const white = !S || S.human === "white";
+    const file = white ? f : 7 - f, rank = white ? 7 - r : r;
+    out.push("abcdefgh"[file] + (rank + 1));
+  }
+  return out;
+}
+function pieceAt(fen, name) {
+  const rows = fen.split(" ")[0].split("/");
+  const row = rows[8 - +name[1]];
+  let f = 0;
+  for (const ch of row) {
+    if (/\d/.test(ch)) { f += +ch; continue; }
+    if ("abcdefgh"[f] === name[0]) return ch;
+    f++;
+  }
+  return null;
+}
+function draw() {
+  if (!S) return;
+  const targets = sel ? S.legal.filter((m) => m.startsWith(sel)).map((m) => m.slice(2, 4)) : [];
+  let html = "";
+  squares().forEach((name) => {
+    const f = "abcdefgh".indexOf(name[0]), r = +name[1] - 1;
+    const p = pieceAt(S.fen, name);
+    let cls = (f + r) % 2 ? "l" : "d";
+    if (S.last && (S.last.slice(0, 2) === name || S.last.slice(2, 4) === name)) cls += " last";
+    if (sel === name) cls += " sel";
+    if (targets.includes(name)) cls += " tgt";
+    const pc = p ? `<span class="pc ${p === p.toUpperCase() ? "w" : "b"}">${GLYPH[p.toLowerCase()]}</span>` : "";
+    html += `<div class="sq ${cls}" onclick="clickSq('${name}')">${pc}</div>`;
+  });
+  $("board").innerHTML = html;
+  $("moves").innerHTML = S.history.map((m, i) => (i % 2 === 0 ? `${i / 2 + 1}. ` : "") +
+    (i === S.history.length - 1 ? `<b>${m}</b>` : m)).join(" ");
+  if (!thinking) {
+    if (!S.ready) $("status").textContent = S.status;
+    else if (S.result) $("status").textContent = `Game over: ${S.result} (${S.termination}).`;
+    else $("status").textContent = S.turn === S.human ? "Your move." : "";
+  }
+}
+async function post(path, body) {
+  const r = await fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+                               body: JSON.stringify(body || {})});
+  return r.json();
+}
+async function refresh() {
+  S = await (await fetch("/state")).json();
+  draw();
+  if (!S.ready) setTimeout(refresh, 2000);
+  else if (!S.result && S.turn !== S.human && !thinking) think();
+}
+async function newGame(color) {
+  if (thinking) return;
+  S = await post("/new", {color}); sel = null; draw();
+  if (S.turn !== S.human) think();
+}
+async function clickSq(name) {
+  if (!S || thinking || S.result || S.turn !== S.human || !S.ready) return;
+  const p = pieceAt(S.fen, name);
+  const mine = p && ((p === p.toUpperCase()) === (S.human === "white"));
+  if (sel) {
+    const cand = S.legal.filter((m) => m.slice(0, 4) === sel + name);
+    if (cand.length) {
+      const uci = cand.find((m) => m.endsWith("q")) || cand[0];  // promotions: queen
+      sel = null;
+      const res = await post("/move", {uci});
+      if (res.error) { $("status").textContent = res.error; return; }
+      S = res; draw();
+      if (!S.result) think();
+      return;
+    }
+  }
+  sel = mine && S.legal.some((m) => m.startsWith(name)) ? name : null;
+  draw();
+}
+function think() {
+  thinking = true;
+  $("qp").classList.add("live");
+  $("call").textContent = ""; $("stream").innerHTML = ""; $("answer").innerHTML = "";
+  $("tok").textContent = "0"; $("nodes").textContent = "0";
+  $("status").textContent = "Qwen is thinking: writing a tool call, then searching in its own forward passes...";
+  t0 = performance.now();
+  timer = setInterval(() => { $("secs").textContent = ((performance.now() - t0) / 1000).toFixed(1); }, 100);
+  let reply = "";
+  const es = new EventSource("/think" + ($("verify").checked ? "?verify=1" : ""));
+  es.onmessage = (msg) => {
+    const ev = JSON.parse(msg.data);
+    if (ev.error) { finish(); $("status").innerHTML = `<span class="bad">${ev.error}</span>`; es.close(); return; }
+    if (ev.phase === "call") $("call").textContent += ev.text;
+    else if (ev.phase === "search") {
+      $("tok").textContent = fmt(ev.tokens); $("nodes").textContent = fmt(ev.nodes);
+      $("stream").innerHTML = ev.recent.map((x) => `<div>${x}</div>`).join("");
+    } else if (ev.phase === "reply") {
+      reply += ev.text;
+      const m = reply.match(/<tool_response>\s*([a-h][1-8][a-h][1-8]q?)/);
+      if (m) $("answer").innerHTML = `&lt;tool_response&gt; <b>${m[1]}</b>`;
+    } else if (ev.phase === "verify") $("status").textContent = "Checking the move against the reference engine...";
+    if (ev.done) {
+      es.close(); finish(); S = ev.state; draw();
+      const s = ev.stats;
+      let line = `Qwen played ${ev.san}: ${fmt(s.nodes)} positions, ${fmt(s.chip_tokens)} forward passes, ${s.seconds}s.`;
+      if (ev.verified === true) line += ' <span class="ok">Matches the reference engine.</span>';
+      if (ev.verified === false) line += ' <span class="bad">Differs from the reference engine!</span>';
+      if (!S.result) line += " Your move.";
+      $("status").innerHTML = line;
+    }
+  };
+  es.onerror = () => { if (thinking) { finish(); $("status").innerHTML = '<span class="bad">Connection lost.</span>'; } es.close(); };
+}
+function finish() { thinking = false; clearInterval(timer); $("qp").classList.remove("live"); }
+refresh();
+</script>
+</body>
+</html>

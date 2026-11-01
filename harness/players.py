@@ -13,7 +13,7 @@ class Qwenputer:
     def __init__(self, nodes: int):
         self.nodes = nodes
         self.name = f"qwenputer-native@{nodes}"
-        self.p = subprocess.Popen([f"{ROOT}/chess_native", "search", str(nodes)], stdin=subprocess.PIPE,
+        self.p = subprocess.Popen([f"{ROOT}/legacy/rv32/chess_native", "search", str(nodes)], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, text=True, bufsize=1)
         self.last = ""
 

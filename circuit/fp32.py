@@ -10,7 +10,10 @@ import sys
 
 import numpy as np
 
-QWENPUTER = os.environ.get("QWENPUTER", os.path.expanduser("~/qwenputer/experimental/riscv"))
+_VENDORED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "vendor", "qwenputer",
+                         "experimental", "riscv")
+QWENPUTER = os.environ.get("QWENPUTER") or (_VENDORED if os.path.isdir(_VENDORED) else
+                                             os.path.expanduser("~/qwenputer/experimental/riscv"))
 if QWENPUTER not in sys.path:
     sys.path.insert(0, QWENPUTER)
 

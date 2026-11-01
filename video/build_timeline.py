@@ -20,31 +20,6 @@ sys.path.insert(0, os.path.join(ROOT, "machine"))
 import vocab as V  # noqa: E402
 from text import Text  # noqa: E402
 
-FILES = "abcdefgh"
-PIECE = " PNBRQKpnbrqk"
-
-
-def sq(s: int) -> str:
-    return FILES[s % 8] + str(s // 8 + 1)
-
-
-def chess_label(t: tuple) -> str:
-    k = t[0]
-    if k == "PUT":
-        return f"PUT {sq(t[1])} {PIECE[t[2]].strip() or '.'}"
-    if k == "START":
-        return f"START depth {t[1]}"
-    if k in ("MOVE", "MOVE_IMP"):
-        return f"{'MOVE*' if k == 'MOVE_IMP' else 'MOVE'} {sq(t[1])}{sq(t[2])}"
-    if k == "RET":
-        return f"RET {t[1]:+d}"
-    if k == "RET_ILLEGAL":
-        return "RET illegal"
-    if k in ("PLY", "PLY_IMP"):
-        return f"{k} {t[1]}"
-    return k
-
-
 def qwen_ply(path: str, T: Text) -> dict:
     with gzip.open(path, "rt") as fh:
         res = json.load(fh)
@@ -54,7 +29,7 @@ def qwen_ply(path: str, T: Text) -> dict:
     last_chip = max((i for i, t in enumerate(toks) if t >= v0), default=first_chip)
     call = T.decode([t for t in toks[:first_chip] if t < v0])
     reply = T.decode([t for t in toks[last_chip + 1:] if t < v0])
-    labels = [chess_label(V.decode(t - v0)) for t in toks[first_chip:last_chip + 1]]
+    labels = [V.label(V.decode(t - v0)) for t in toks[first_chip:last_chip + 1]]
     n = len(labels)
     head, tail = labels[:80], labels[-40:] if n > 120 else []
     mid = labels[80:n - 40] if n > 120 else labels[80:]

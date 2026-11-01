@@ -1,5 +1,0 @@
-stage5 rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK.. d2: 231 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 10213, 'heads': 28, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 9}, eval 2s
-stage5 r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p.. d2: 27148 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 10213, 'heads': 28, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 9}, eval 201s
-stage5 rnbqkbnr/ppp1p1pp/8/3pPp2/8/8/PPPP1PPP/R.. d2: 1401 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 10213, 'heads': 28, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 9}, eval 6s
-stage5 r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp.. d2: 25488 next-token predictions, mismatches 0, circuit {'layers': 22, 'dims': 10213, 'heads': 28, 'ffn_units': 40376, 'max_units': 8591, 'max_heads': 9}, eval 189s
-TOTAL mismatches 0

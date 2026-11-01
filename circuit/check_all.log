@@ -1,4 +1,0 @@
-circuit {'layers': 23, 'dims': 11156, 'heads': 51, 'ffn_units': 42093, 'max_units': 9214, 'max_heads': 16}
-IR: 11748 positions, mismatches 0 (87s)
-SPANS over 2^24: 0 []
-EXEC: 11748 positions, 0 differ (139s)

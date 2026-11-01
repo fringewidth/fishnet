@@ -1,0 +1,27 @@
+[project]
+name = "fishnet"
+version = "0.1.0"
+description = "A chess engine compiled into the weights of Qwen3.5-4B"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "numpy>=2.5",
+    "numba>=0.68",
+    "torch>=2.15",
+    "torchvision>=0.29",
+    "transformers>=5.22",
+    "tokenizers>=0.23",
+    "safetensors>=0.8",
+    "accelerate>=1.15",
+    "huggingface_hub>=2.4",
+    "pillow>=13",
+    "chess>=1.11",
+]
+
+[dependency-groups]
+# the matches against frontier LLMs (harness/) and the replay video (video/)
+harness = ["mcp<2"]
+video = ["playwright>=1.50"]
+
+[tool.uv]
+package = false

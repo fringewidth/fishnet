@@ -32,15 +32,15 @@ from text import Text, default_tokenizer
 
 
 class FishnetMac:
-    def __init__(self, depth: int = B.DEPTH, device: str = "mps") -> None:
+    def __init__(self, depth: int = B.DEPTH, device: str | None = None) -> None:
         from transformers import AutoModelForImageTextToText, AutoTokenizer
 
         src = default_tokenizer().parent
-        self.dev = device
+        self.dev = device or ("mps" if torch.backends.mps.is_available() else "cpu")
         self.tok = AutoTokenizer.from_pretrained(src)
         full = AutoModelForImageTextToText.from_pretrained(src, dtype=torch.bfloat16)
-        self.lm = full.model.language_model.to(device).eval()
-        self.head = full.lm_head.to(device).eval()
+        self.lm = full.model.language_model.to(self.dev).eval()
+        self.head = full.lm_head.to(self.dev).eval()
         del full
         self.v0 = self.head.weight.shape[0]
         self.T = Text(src / "tokenizer.json")
@@ -80,7 +80,9 @@ class FishnetMac:
         return [int(x) for x in (out if isinstance(out, list) else out["input_ids"])]
 
     @torch.no_grad()
-    def move(self, fen: str, max_text: int = 600, max_chip: int = 20_000_000, verbose=False, **_) -> dict:
+    def move(self, fen: str, max_text: int = 600, max_chip: int = 20_000_000, verbose=False, on_token=None,
+             **_) -> dict:
+        """One move. on_token(model_id, is_chess) is called for every generated token."""
         ids = self.prompt(fen)
         self.ex.reset()  # the circuit starts from zero state and reads the prompt
         for i in ids:
@@ -91,6 +93,8 @@ class FishnetMac:
         t0 = time.time()
         while n_text < max_text and n_chip < max_chip:
             gen.append(nxt)
+            if on_token is not None:
+                on_token(nxt, nxt >= self.v0)
             if nxt < self.v0 or n_chip % 1000 == 0:
                 times.append((len(gen) - 1, round(time.time() - t0, 3)))
             if nxt in self.eos:

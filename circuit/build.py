@@ -17,7 +17,7 @@ from ref import MAX_PLY
 
 T4B = Target(key_heads=16, value_heads=32, intermediate=9216)
 NCNT = 60  # decay counters are decoded up to this many events since the anchor
-BIG = 1 << 12  # literal weight in fp32 threshold units (> any integer range they test)
+BIG = 1 << 20  # literal weight in fp32 threshold units (> any integer range they test)
 DATA_COLS = list(range(2, 128))  # value columns a head row can hold data in
 
 
@@ -173,7 +173,7 @@ def build_stage1(c: ChessCirc) -> dict:
     # DIFF row keys: the child's row on MOVE (P), the returning child's on RET (P + 1)
     kd = [c.node(c.eq_terms(P, r, lits=[c.isMOVE]) + c.eq_terms(P, r - 1, lits=[c.isRET]), f"kd[{r}]")
           for r in range(MAX_PLY)]
-    out.update(P=P, p_oh=p_oh)
+    out.update(P=P, p_oh=p_oh, tm=tm, tr=tr)
 
     # ---------------------------------------------------------------- the diff-stack board
     # columns: per square 4 add bits + 4 rem bits (512) and 4 lost bits, split over value heads
@@ -701,4 +701,79 @@ def build_stage4(c: ChessCirc, s1: dict, s2: dict, s3: dict) -> dict:
     sel_to = [c.node([u for i in range(4) for u in c.t_and([srcs_to[i][sq], exists[i]] + gate[i])],
                      f"sel.t[{sq}]") for sq in range(64)]
     out.update(sel_from=sel_from, sel_to=sel_to, full=full)
+    return out
+
+
+# ====================================================================== stage 5: the next token
+
+ANCHOR_AT = 25  # = machine/ref2.ANCHOR_AT
+
+
+def build_stage5(c: ChessCirc, s1: dict, s2: dict, s3: dict, s4: dict) -> dict:
+    from ref import MATE
+    one, is_ = c.one, c.is_
+    P, p_oh = s1["P"], s1["p_oh"]
+    fresh = is_["START"] + c.isMOVE
+    cont = c.isRET + c.isPLY
+    rel = s2["rel"]
+    stm_white = s2["stm_white"]
+    stm_black = one - stm_white
+    sel_from, sel_to = s4["sel_from"], s4["sel_to"]
+    out = {}
+
+    # ---------------------------------------------------------------- the node's own best (offset)
+    own_best = c.node([(1, s3["best"][r], p_oh[r]) for r in range(MAX_PLY)], "own.best")
+    own_stand = c.node([(1, s3["stand"][r], p_oh[r]) for r in range(MAX_PLY)], "own.stand")
+    be_x = c.node([(1, one, own_best), (1, one, own_stand - own_best)], "be.x")
+    s_feat = c.feat("ret.s", lambda t: V.decode(t)[1] if V.decode(t)[0] == "RET" else 0)
+    v_x = OFF - s_feat
+    improved = c.node(c.ge_terms(v_x - be_x, 1, lits=[is_["RET"]]), "improved")
+    be2_x = be_x + c.node([(1, is_["RET"], v_x - be_x)], "be.raise")
+    beta_x = s3["beta"] + OFF
+
+    # ---------------------------------------------------------------- the cases
+    illegal_f = c.node(c.t_and([fresh, one - p_oh[0], s2["illegal"]]), "case.illegal")
+    cap_f = c.node(c.t_and([fresh, p_oh[MAX_PLY - 1], one - s2["illegal"]]), "case.plycap")
+    stand_cut = c.node(c.ge_terms(s3["eval"] - s3["beta"], 0, lits=[s3["qnode"]]), "case.standcut")
+    cut = c.node(c.ge_terms(be2_x - beta_x, 0, lits=[cont]), "case.cut")
+    has_move = sum(sel_from, Expr())
+    early = illegal_f + cap_f + stand_cut + cut
+    move = c.node(c.t_and([one - early, has_move]), "case.move")
+    nomove = c.node(c.t_and([one - early, one - has_move]), "case.nomove")
+    done = c.node(c.t_and([nomove, p_oh[0]]), "case.done")
+    mate = c.node(c.ge_terms(-be2_x, 0, lits=[s4["full"], nomove]), "case.mate")  # no legal move
+    anc = c.node(c.ge_terms(s1["tm"][ANCHOR_AT - 1] + s1["tr"][ANCHOR_AT - 1], 1,
+                            lits=[c.isRET, one - done]), "case.anchor")
+
+    # ---------------------------------------------------------------- RET score
+    retv = [(1, s3["eval"], cap_f), (1, s3["eval"], stand_cut), (1, be2_x - OFF, cut),
+            (1, be2_x - OFF, nomove - mate - done),
+            (1, P - MATE, mate + s2["in_check"] - 1)]  # mate: -MATE + P; stalemate: 0
+    ret_score = c.node(retv, "ret.score")
+
+    # ---------------------------------------------------------------- kinds
+    k = {}
+    k["RET_ILLEGAL"] = illegal_f
+    k["RET"] = c.node(c.t_and([cap_f + stand_cut + cut + nomove - done, one - anc]), "k.RET")
+    k["MOVE"] = c.node(c.t_and([move, one - improved, one - anc]), "k.MOVE")
+    k["MOVE_IMP"] = c.node(c.t_and([move, improved, one - anc]), "k.MOVE_IMP")
+    k["PLY"] = c.node(c.t_and([anc, one - improved]), "k.PLY")
+    k["PLY_IMP"] = c.node(c.t_and([anc, improved]), "k.PLY_IMP")
+    k["DONE"] = done
+
+    # ---------------------------------------------------------------- MOVE payload (absolute)
+    abs_f = [c.node(c.t_and([sel_from[s], stm_white]) + c.t_and([sel_from[s ^ 56], stm_black]), f"out.f[{s}]")
+             for s in range(64)]
+    abs_t = [c.node(c.t_and([sel_to[s], stm_white]) + c.t_and([sel_to[s ^ 56], stm_black]), f"out.t[{s}]")
+             for s in range(64)]
+    pk = [c.node([u for s in range(64) for u in c.t_and([sel_from[s], rel[s][kk - 1]])], f"out.pk=={kk}")
+          for kk in range(1, 7)]
+    xk = [c.node([u for s in range(64) for u in c.t_and([sel_to[s], rel[s][kk + 5]])], f"out.xk=={kk}")
+          for kk in range(1, 6)]
+    ep = s2["ep_read"]
+    pawn_from = [rel[s][0] for s in range(64)]
+    xk_ep = c.node([u for fl in range(8) for s in range(32, 40) if abs(s % 8 - fl) == 1
+                    for u in c.t_and([sel_to[40 + fl], ep[fl], sel_from[s], pawn_from[s]])], "out.xk==ep")
+    out.update(kinds=k, abs_f=abs_f, abs_t=abs_t, pk=pk, xk=xk + [xk_ep], white=stm_white,
+               ret_score=ret_score, P=P, improved=improved)
     return out

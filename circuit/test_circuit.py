@@ -219,6 +219,61 @@ def check_stage4(fen: str, depth: int) -> int:
     return bad
 
 
+def predicted_tokens(c, s5, mat):
+    """The token the circuit predicts at every position, decoded from its output dims."""
+    ev = lambda e: ir.ev(e, mat)  # noqa: E731
+    kinds = {n: ev(e) for n, e in s5["kinds"].items()}
+    F = np.stack([ev(e) for e in s5["abs_f"]], 1)
+    T = np.stack([ev(e) for e in s5["abs_t"]], 1)
+    PK = np.stack([ev(e) for e in s5["pk"]], 1)
+    XK = np.stack([ev(e) for e in s5["xk"]], 1)
+    W, S, P = ev(s5["white"]), ev(s5["ret_score"]), ev(s5["P"])
+    out = []
+    for i in range(mat.shape[0]):
+        on = [n for n, v in kinds.items() if v[i] == 1]
+        bad = [n for n, v in kinds.items() if v[i] not in (0, 1)]
+        if len(on) != 1 or bad:
+            out.append(("?", on, bad))
+            continue
+        n = on[0]
+        if n in ("MOVE", "MOVE_IMP"):
+            xk = 0 if XK[i].sum() == 0 else int(XK[i].argmax()) + 1
+            out.append((n, int(F[i].argmax()), int(T[i].argmax()), int(PK[i].argmax()) + 1, xk, int(W[i])))
+        elif n == "RET":
+            out.append((n, int(S[i])))
+        elif n in ("PLY", "PLY_IMP"):
+            out.append((n, int(P[i])))
+        else:
+            out.append((n,))
+    return out
+
+
+def check_stage5(fen: str, depth: int) -> int:
+    pos, white = ref.from_fen(fen)
+    m = ref2.Machine2(pos, white, depth)
+    m.run()
+    c = B.ChessCirc()
+    s1 = B.build_stage1(c)
+    s2 = B.build_stage2(c, s1)
+    s3 = B.build_stage3(c, s1, s2)
+    s4 = B.build_stage4(c, s1, s2, s3)
+    s5 = B.build_stage5(c, s1, s2, s3, s4)
+    toks = [V.encode(t) for t in m.tokens[:-1]]
+    t0 = time.time()
+    mat = ir.evaluate(c, toks, check=True, carry=initial_carry(c, ref2.abs_board(pos, white)))
+    dt = time.time() - t0
+    pred = predicted_tokens(c, s5, mat)
+    bad = 0
+    for i, want in enumerate(m.tokens[1:]):
+        if pred[i] != want:
+            bad += 1
+            if bad <= 6:
+                print(f"  after token {i} {m.tokens[i]}: predicted {pred[i]} want {want}")
+    print(f"stage5 {fen[:40]}.. d{depth}: {len(pred)} next-token predictions, mismatches {bad}, "
+          f"circuit {c.stats()}, eval {dt:.0f}s")
+    return bad
+
+
 if __name__ == "__main__":
     fens = ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R b KQkq - 0 1",
@@ -226,6 +281,6 @@ if __name__ == "__main__":
             "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1"]
     depth = int(sys.argv[1]) if len(sys.argv) > 1 else 2
     stage = sys.argv[2] if len(sys.argv) > 2 else "1"
-    check = {"1": check_stage1, "2": check_stage2, "3": check_stage3, "4": check_stage4}[stage]
+    check = {"1": check_stage1, "2": check_stage2, "3": check_stage3, "4": check_stage4, "5": check_stage5}[stage]
     total = sum(check(f, depth) for f in fens)
     print("TOTAL mismatches", total)
